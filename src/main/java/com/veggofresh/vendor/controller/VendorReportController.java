@@ -10,10 +10,12 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.Map;
+import org.springframework.security.access.prepost.PreAuthorize;
 
 @RestController
 @RequestMapping("/api/vendor/reports")
 @RequiredArgsConstructor
+@PreAuthorize("hasRole('VENDOR')")
 public class VendorReportController {
 
     private final VendorReportService vendorReportService;

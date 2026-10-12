@@ -1,5 +1,6 @@
 package com.veggofresh.admin.controller;
 
+import com.veggofresh.delivery.dto.DeliveryKycDetailDto;
 import com.veggofresh.delivery.dto.DeliveryKycReviewDto;
 import com.veggofresh.delivery.service.DeliveryKycService;
 import com.veggofresh.platform.common.ApiResponse;
@@ -59,8 +60,8 @@ public class AdminDeliveryKycController {
     }
 
     @GetMapping("/{userId}")
-    public ResponseEntity<ApiResponse<DeliveryKycReviewDto>> getDetail(@PathVariable UUID userId) {
-        DeliveryKycReviewDto detail = deliveryKycService.getKycDetail(userId);
+    public ResponseEntity<ApiResponse<DeliveryKycDetailDto>> getDetail(@PathVariable UUID userId) {
+        DeliveryKycDetailDto detail = deliveryKycService.getKycDetail(userId);
         return ResponseEntity.ok(ApiResponse.success(detail, "Delivery partner KYC detail retrieved successfully"));
     }
 

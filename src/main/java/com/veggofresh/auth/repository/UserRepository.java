@@ -14,7 +14,12 @@ import java.util.UUID;
 
 @Repository
 public interface UserRepository extends JpaRepository<User, UUID> {
-    Optional<User> findByPhone(String phone);
+    /**
+     * The ACTIVE account of this phone number in one specific role.
+     * A phone number can own up to three accounts (CUSTOMER, VENDOR, DELIVERY) but never two of the same
+     * role (migration V164), so a phone-only lookup would be ambiguous and has been removed on purpose.
+     */
+    Optional<User> findByPhoneAndRole(String phone, UserRole role);
     Optional<User> findByEmail(String email);
 
     // ── Admin customer management queries ───────────────────────────────────

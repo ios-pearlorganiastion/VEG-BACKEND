@@ -2,6 +2,7 @@ package com.veggofresh.admin.controller;
 
 import com.veggofresh.platform.common.ApiResponse;
 import com.veggofresh.platform.common.PageResponse;
+import com.veggofresh.vendor.dto.VendorKycDetailDto;
 import com.veggofresh.vendor.dto.VendorKycReviewDto;
 import com.veggofresh.vendor.service.VendorKycService;
 import lombok.RequiredArgsConstructor;
@@ -61,8 +62,8 @@ public class AdminVendorKycController {
     }
 
     @GetMapping("/{shopId}")
-    public ResponseEntity<ApiResponse<VendorKycReviewDto>> getDetail(@PathVariable UUID shopId) {
-        VendorKycReviewDto detail = vendorKycService.getKycDetail(shopId);
+    public ResponseEntity<ApiResponse<VendorKycDetailDto>> getDetail(@PathVariable UUID shopId) {
+        VendorKycDetailDto detail = vendorKycService.getKycDetail(shopId);
         return ResponseEntity.ok(ApiResponse.success(detail, "Vendor KYC detail retrieved successfully"));
     }
 

@@ -10,6 +10,7 @@ import com.veggofresh.auth.service.FirebaseAuthService;
 import com.veggofresh.auth.entity.OtpVerification;
 import com.veggofresh.auth.entity.RefreshToken;
 import com.veggofresh.auth.entity.User;
+import com.veggofresh.auth.entity.UserRole;
 import com.veggofresh.auth.repository.OtpVerificationRepository;
 import com.veggofresh.auth.repository.RefreshTokenRepository;
 import com.veggofresh.auth.repository.UserRepository;
@@ -24,8 +25,10 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.EnumSet;
 import java.util.List;
 import java.util.Random;
+import java.util.Set;
 import java.util.UUID;
 
 @Slf4j
@@ -44,6 +47,13 @@ public class AuthServiceImpl implements AuthService {
     private static final int MAX_OTP_ATTEMPTS = 5;
     private static final int OTP_RATE_LIMIT_SECONDS = 60;
     private static final String MASTER_OTP = "222222";
+
+    /**
+     * Roles that may sign in / sign up with a phone number. ADMIN is deliberately NOT here: admin accounts
+     * are seeded and sign in with e-mail + password (AdminAuthServiceImpl), never through the OTP screens.
+     */
+    private static final Set<UserRole> PHONE_LOGIN_ROLES =
+            EnumSet.of(UserRole.CUSTOMER, UserRole.VENDOR, UserRole.DELIVERY);
 
     @Override
     public void requestOtp(OtpRequestDto request) {
@@ -73,6 +83,9 @@ public class AuthServiceImpl implements AuthService {
     @Override
     public AuthTokenResponseDto verifyOtp(OtpVerifyDto request) {
         String phone = request.getPhone();
+
+        // Reject a role that can never log in this way BEFORE the OTP is checked, so it is not used up.
+        requirePhoneLoginRole(request.getRole());
 
         boolean isMasterOtp = MASTER_OTP.equals(request.getOtp());
 
@@ -105,14 +118,8 @@ public class AuthServiceImpl implements AuthService {
             otpVerificationRepository.save(verification);
         }
 
-        // Find or create user
-        User user = userRepository.findByPhone(phone).orElseGet(() -> {
-            User newUser = new User();
-            newUser.setPhone(phone);
-            newUser.setRole(request.getRole());
-            newUser.setVerified(true);
-            return userRepository.save(newUser);
-        });
+        // Find (or create) the account of THIS phone number in THIS role.
+        User user = findOrCreateUser(phone, request.getRole());
 
         if (user.isBlocked()) {
             throw new BusinessException("AUTH_USER_BLOCKED", "User account is blocked", HttpStatus.FORBIDDEN);
@@ -128,17 +135,13 @@ public class AuthServiceImpl implements AuthService {
 
     @Override
     public AuthTokenResponseDto verifyFirebaseOtp(FirebaseOtpVerifyDto request) {
+        requirePhoneLoginRole(request.getRole());
+
         // Verify Firebase ID token and extract phone number (Firebase has already validated the SMS OTP).
         String phone = firebaseAuthService.getVerifiedPhone(request.getIdToken());
 
-        // Find or create user by verified phone — same pattern as verifyOtp.
-        User user = userRepository.findByPhone(phone).orElseGet(() -> {
-            User newUser = new User();
-            newUser.setPhone(phone);
-            newUser.setRole(request.getRole());
-            newUser.setVerified(true);
-            return userRepository.save(newUser);
-        });
+        // Find (or create) the account of this verified phone number in the requested role.
+        User user = findOrCreateUser(phone, request.getRole());
 
         if (user.isBlocked()) {
             throw new BusinessException("AUTH_USER_BLOCKED", "User account is blocked", HttpStatus.FORBIDDEN);
@@ -217,6 +220,30 @@ public class AuthServiceImpl implements AuthService {
                 .isBlocked(user.isBlocked())
                 .createdAt(user.getCreatedAt())
                 .build();
+    }
+
+    /** Only CUSTOMER, VENDOR and DELIVERY may use phone login; anything else (ADMIN, null) is refused. */
+    private void requirePhoneLoginRole(UserRole role) {
+        if (role == null || !PHONE_LOGIN_ROLES.contains(role)) {
+            throw new BusinessException("AUTH_ROLE_NOT_ALLOWED",
+                    "This role cannot sign in with a phone number. Use CUSTOMER, VENDOR or DELIVERY.",
+                    HttpStatus.BAD_REQUEST);
+        }
+    }
+
+    /**
+     * One phone number can own one account per role. Returns the existing account of this phone in this
+     * role, or creates it. An account that exists in ANOTHER role is never returned, so the token's role
+     * always matches the app that is logging in.
+     */
+    private User findOrCreateUser(String phone, UserRole role) {
+        return userRepository.findByPhoneAndRole(phone, role).orElseGet(() -> {
+            User newUser = new User();
+            newUser.setPhone(phone);
+            newUser.setRole(role);
+            newUser.setVerified(true);
+            return userRepository.save(newUser);
+        });
     }
 
     private AuthTokenResponseDto generateTokens(User user) {

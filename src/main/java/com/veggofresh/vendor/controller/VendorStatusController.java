@@ -8,10 +8,12 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.Map;
+import org.springframework.security.access.prepost.PreAuthorize;
 
 @RestController
 @RequestMapping("/api/vendor/status")
 @RequiredArgsConstructor
+@PreAuthorize("hasRole('VENDOR')")
 public class VendorStatusController {
 
     private final VendorShopService vendorShopService;

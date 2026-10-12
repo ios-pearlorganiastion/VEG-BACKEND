@@ -1,5 +1,6 @@
 package com.veggofresh.delivery.service;
 
+import com.veggofresh.delivery.dto.DeliveryKycDetailDto;
 import com.veggofresh.delivery.dto.DeliveryKycReviewDto;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
@@ -15,7 +16,8 @@ import java.util.UUID;
  */
 public interface DeliveryKycService {
     Page<DeliveryKycReviewDto> listPendingKyc(Pageable pageable);
-    DeliveryKycReviewDto getKycDetail(UUID userId);
+    /** Full onboarding data (profile, vehicle, bank, documents) for the admin review screen. */
+    DeliveryKycDetailDto getKycDetail(UUID userId);
     void approveKyc(UUID userId);
     void rejectKyc(UUID userId, String reason);
 }

@@ -12,7 +12,8 @@ import java.util.UUID;
  */
 public interface UserLookupService {
     Optional<UserSummaryDto> findById(UUID userId);
-    Optional<UserSummaryDto> findByPhone(String phone);
+    /** The account of this phone number in the given role (e.g. "CUSTOMER"); empty if none or the role is unknown. */
+    Optional<UserSummaryDto> findByPhoneAndRole(String phone, String role);
     Optional<UserSummaryDto> findByEmail(String email);
 
     /**

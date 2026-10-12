@@ -27,8 +27,16 @@ public class UserLookupServiceImpl implements UserLookupService {
     }
 
     @Override
-    public Optional<UserSummaryDto> findByPhone(String phone) {
-        return userRepository.findByPhone(phone).map(this::mapToSummary);
+    public Optional<UserSummaryDto> findByPhoneAndRole(String phone, String role) {
+        if (phone == null || role == null || role.isBlank()) {
+            return Optional.empty();
+        }
+        try {
+            return userRepository.findByPhoneAndRole(phone, UserRole.valueOf(role.trim().toUpperCase()))
+                    .map(this::mapToSummary);
+        } catch (IllegalArgumentException e) {
+            return Optional.empty();
+        }
     }
 
     @Override

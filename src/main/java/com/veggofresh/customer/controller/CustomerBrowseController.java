@@ -22,6 +22,7 @@ import org.springframework.web.bind.annotation.RestController;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import org.springframework.security.access.prepost.PreAuthorize;
 
 /**
  * BREAKING CHANGE this round: /products' `category` request param used to be
@@ -35,6 +36,7 @@ import java.util.UUID;
 @RestController
 @RequestMapping("/api/customer")
 @RequiredArgsConstructor
+@PreAuthorize("hasRole('CUSTOMER')")
 public class CustomerBrowseController {
 
     private final ProductCatalogService productCatalogService;

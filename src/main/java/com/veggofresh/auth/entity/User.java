@@ -17,7 +17,11 @@ import org.hibernate.annotations.Where;
 @Where(clause = "deleted_at IS NULL")
 public class User extends BaseEntity {
 
-    @Column(nullable = false, unique = true, length = 20)
+    /**
+     * Not unique on its own any more: one phone number may own one ACTIVE account per role
+     * (unique on (phone, role) - see migration V164).
+     */
+    @Column(nullable = false, length = 20)
     private String phone;
 
     @Column(unique = true)
