@@ -6,10 +6,10 @@ package com.veggofresh.notification.entity;
  * stable audit label for the row in {@code notifications}.
  *
  * <p>Ordered to match the event coverage implemented for this module:
- * order lifecycle → delivery lifecycle → stock/payment/admin events.
+ * order lifecycle â†’ delivery lifecycle â†’ stock/payment/admin events.
  */
 public enum NotificationType {
-    // ── Order lifecycle ──────────────────────────────────────
+    // â”€â”€ Order lifecycle â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     ORDER_PLACED,
     NEW_ORDER_REQUEST,          // vendor-side broadcast-inbox ping (order awaiting acceptance)
     ORDER_ACCEPTED,             // vendor-side: this shop won the accept race
@@ -20,19 +20,25 @@ public enum NotificationType {
     ORDER_DELIVERED,
     ORDER_CANCELLED,
 
-    // ── Delivery lifecycle ────────────────────────────────────
+    // â”€â”€ Delivery lifecycle â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     DELIVERY_ASSIGNED,          // partner accepted / was assigned an order
     DELIVERY_PICKUP_OTP_GENERATED,
     DELIVERY_PICKUP_OTP_VERIFIED,
     DELIVERY_DROP_OTP_GENERATED,
     DELIVERY_DROP_OTP_VERIFIED,
 
-    // ── Stock / money / feedback ─────────────────────────────
+    // â”€â”€ Stock / money / feedback â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     LOW_STOCK_ALERT,
     PAYMENT_SUCCESS,
     PAYMENT_FAILED,
     REVIEW_RECEIVED,
 
-    // ── Admin ────────────────────────────────────────────────
-    ADMIN_ANNOUNCEMENT
+    // â”€â”€ Admin â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    ADMIN_ANNOUNCEMENT,
+
+    // â”€â”€ Complaint lifecycle â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    COMPLAINT_REGISTERED,
+    COMPLAINT_RESOLVED,
+    COMPLAINT_UNRESOLVED,
+    COMPLAINT_REOPENED
 }
