@@ -124,6 +124,14 @@
             <version>${cloudinary.version}</version>
         </dependency>
 
+        <!-- ===== iText 7 — PDF generation (Admin user-list export) ===== -->
+        <dependency>
+            <groupId>com.itextpdf</groupId>
+            <artifactId>itext7-core</artifactId>
+            <version>7.2.5</version>
+            <type>pom</type>
+        </dependency>
+
          <!-- ===== .env loader (local dev only — reads CLOUDINARY_*, DB_*, JWT_SECRET etc. from .env) ===== -->
         <dependency>
             <groupId>me.paulschwarz</groupId>

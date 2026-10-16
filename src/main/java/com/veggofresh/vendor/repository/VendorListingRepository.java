@@ -8,6 +8,7 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -20,6 +21,10 @@ public interface VendorListingRepository extends JpaRepository<VendorListing, UU
     List<VendorListing> findByShopId(UUID shopId);
 
     long countByShopIdAndIsListedTrue(UUID shopId);
+
+    /** Batch count of active listings grouped by shop ID. */
+    @Query("SELECT vl.shop.id, COUNT(vl) FROM VendorListing vl WHERE vl.shop.id IN :shopIds AND vl.isListed = true GROUP BY vl.shop.id")
+    List<Object[]> countGroupedByShopIdIn(@Param("shopIds") Collection<UUID> shopIds);
 
     /** All shops (via their listing rows) currently listing this catalog product. */
     List<VendorListing> findByCatalogProductIdAndIsListedTrue(UUID catalogProductId);

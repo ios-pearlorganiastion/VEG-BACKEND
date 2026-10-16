@@ -9,6 +9,7 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -43,4 +44,42 @@ public interface UserRepository extends JpaRepository<User, UUID> {
 
     /** All blocked customers — for moderation ledger */
     Page<User> findByRoleAndIsBlocked(UserRole role, boolean isBlocked, Pageable pageable);
+
+    // ── Admin user-list APIs (Get-All with full filters) ────────────────────
+
+    /**
+     * Full-filter paginated query for admin user-list APIs.
+     * Supports optional search (email / phone), optional isBlocked filter,
+     * optional isVerified filter. Sorting & pagination are handled by Pageable.
+     */
+    @Query("SELECT u FROM User u WHERE u.role = :role AND " +
+           "(:search IS NULL OR :search = '' OR " +
+           " LOWER(u.email) LIKE LOWER(CONCAT('%', :search, '%')) OR " +
+           " LOWER(u.phone) LIKE LOWER(CONCAT('%', :search, '%'))) AND " +
+           "(:isBlocked IS NULL OR u.isBlocked = :isBlocked) AND " +
+           "(:isVerified IS NULL OR u.isVerified = :isVerified)")
+    Page<User> findByRoleWithFilters(
+            @Param("role") UserRole role,
+            @Param("search") String search,
+            @Param("isBlocked") Boolean isBlocked,
+            @Param("isVerified") Boolean isVerified,
+            Pageable pageable);
+
+    /**
+     * Non-paginated version — used to build the PDF export stream
+     * (only exported pages worth of data, limited externally).
+     */
+    @Query("SELECT u FROM User u WHERE u.role = :role AND " +
+           "(:search IS NULL OR :search = '' OR " +
+           " LOWER(u.email) LIKE LOWER(CONCAT('%', :search, '%')) OR " +
+           " LOWER(u.phone) LIKE LOWER(CONCAT('%', :search, '%'))) AND " +
+           "(:isBlocked IS NULL OR u.isBlocked = :isBlocked) AND " +
+           "(:isVerified IS NULL OR u.isVerified = :isVerified)")
+    List<User> findByRoleWithFiltersNoPage(
+            @Param("role") UserRole role,
+            @Param("search") String search,
+            @Param("isBlocked") Boolean isBlocked,
+            @Param("isVerified") Boolean isVerified,
+            Pageable pageable);
 }
+

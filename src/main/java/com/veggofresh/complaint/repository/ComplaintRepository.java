@@ -10,6 +10,8 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
+import java.util.Collection;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -58,4 +60,11 @@ public interface ComplaintRepository extends JpaRepository<Complaint, UUID> {
     long countByStatus(ComplaintStatus status);
 
     long countByUserRole(UserRole userRole);
+
+    /** Count complaints filed by a specific user — used in admin user-list count summaries. */
+    long countByUserId(UUID userId);
+
+    /** Batch complaint counts grouped by user ID. */
+    @Query("SELECT c.userId, COUNT(c) FROM Complaint c WHERE c.userId IN :userIds GROUP BY c.userId")
+    List<Object[]> countGroupedByUserIdIn(@Param("userIds") Collection<UUID> userIds);
 }

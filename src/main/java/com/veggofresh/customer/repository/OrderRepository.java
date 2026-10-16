@@ -10,6 +10,7 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -77,6 +78,17 @@ public interface OrderRepository extends JpaRepository<Order, UUID> {
     Page<Order> findByUserIdAndStatusIn(UUID userId, List<OrderStatus> statuses, Pageable pageable);
 
     long countByUserId(UUID userId);
+
+    /** Count orders accepted (won) by a specific vendor shop. */
+    long countByAcceptedShopId(UUID shopId);
+
+    /** Batch order counts grouped by customer userId. */
+    @Query("SELECT o.userId, COUNT(o) FROM Order o WHERE o.userId IN :userIds AND o.deletedAt IS NULL GROUP BY o.userId")
+    List<Object[]> countGroupedByUserIdIn(@Param("userIds") Collection<UUID> userIds);
+
+    /** Batch order counts grouped by accepted shop ID. */
+    @Query("SELECT o.acceptedShopId, COUNT(o) FROM Order o WHERE o.acceptedShopId IN :shopIds AND o.deletedAt IS NULL GROUP BY o.acceptedShopId")
+    List<Object[]> countGroupedByAcceptedShopIdIn(@Param("shopIds") Collection<UUID> shopIds);
 
     // ── Admin reporting queries ─────────────────────────────────────────────
 
