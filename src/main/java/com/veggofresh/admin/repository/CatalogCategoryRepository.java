@@ -29,4 +29,27 @@ public interface CatalogCategoryRepository extends JpaRepository<CatalogCategory
            "c.isActive = true AND " +
            "(:search IS NULL OR LOWER(c.name) LIKE LOWER(CONCAT('%', CAST(:search AS string), '%')))")
     Page<CatalogCategory> searchActive(@Param("search") String search, Pageable pageable);
+
+    /**
+     * Admin paginated search over ALL categories, optionally narrowed by status.
+     * Status uses two never-null flags (instead of one nullable Boolean) so Postgres
+     * never has to infer the type of a null bind parameter:
+     * filterActive=false -> active and inactive; filterActive=true -> only isActive = :active.
+     */
+    @Query("SELECT c FROM CatalogCategory c WHERE " +
+           "(:filterActive = false OR c.isActive = :active) AND " +
+           "(:search IS NULL OR LOWER(c.name) LIKE LOWER(CONCAT('%', CAST(:search AS string), '%')))")
+    Page<CatalogCategory> searchAdmin(@Param("search") String search,
+                                      @Param("filterActive") boolean filterActive,
+                                      @Param("active") boolean active,
+                                      Pageable pageable);
+
+    /** Every category (active and inactive) as (id, stored position), in display order. Used by move. */
+    @Query("SELECT c.id AS id, c.displayOrder AS displayOrder FROM CatalogCategory c " +
+           "ORDER BY c.displayOrder ASC, c.name ASC, c.id ASC")
+    List<CatalogOrderRow> findAllOrderRows();
+
+    /** Highest stored position, 0 when there are no categories. New categories get this + 1. */
+    @Query("SELECT COALESCE(MAX(c.displayOrder), 0) FROM CatalogCategory c")
+    Integer findMaxDisplayOrder();
 }

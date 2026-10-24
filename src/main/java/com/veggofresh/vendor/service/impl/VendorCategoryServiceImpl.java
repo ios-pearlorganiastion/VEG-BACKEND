@@ -4,6 +4,7 @@ import com.veggofresh.admin.dto.response.CategoryResponseDto;
 import com.veggofresh.admin.dto.response.SubcategoryResponseDto;
 import com.veggofresh.admin.service.CatalogCategoryService;
 import com.veggofresh.admin.service.CatalogSubcategoryService;
+import com.veggofresh.platform.exception.BusinessException;
 import com.veggofresh.vendor.dto.response.VendorCategoryTreeDto;
 import com.veggofresh.vendor.dto.response.VendorListingDto;
 import com.veggofresh.vendor.dto.response.VendorSubcategoryTreeDto;
@@ -13,6 +14,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
+import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -45,6 +47,10 @@ public class VendorCategoryServiceImpl implements VendorCategoryService {
     @Override
     public VendorCategoryTreeDto getCategoryTree(UUID ownerUserId, UUID categoryId) {
         CategoryResponseDto category = catalogCategoryService.getCategoryById(categoryId);
+        // Vendors must never see an inactive category (same 404 as a category that does not exist).
+        if (!category.isActive()) {
+            throw new BusinessException("CATALOG_CATEGORY_NOT_FOUND", "Category not found", HttpStatus.NOT_FOUND);
+        }
         return buildCategoryTree(ownerUserId, category);
     }
 
@@ -56,7 +62,7 @@ public class VendorCategoryServiceImpl implements VendorCategoryService {
     }
 
     private VendorCategoryTreeDto buildCategoryTree(UUID ownerUserId, CategoryResponseDto category) {
-        List<VendorSubcategoryTreeDto> subcategoryTrees = catalogSubcategoryService.listByCategory(category.getId()).stream()
+        List<VendorSubcategoryTreeDto> subcategoryTrees = catalogSubcategoryService.listActiveByCategory(category.getId()).stream()
                 .map(subcategory -> buildSubcategoryTree(ownerUserId, subcategory))
                 .collect(Collectors.toList());
 

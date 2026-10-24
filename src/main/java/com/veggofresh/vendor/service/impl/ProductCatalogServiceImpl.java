@@ -24,6 +24,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.PageRequest;
+import org.springframework.http.HttpStatus;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -246,6 +247,10 @@ public class ProductCatalogServiceImpl implements ProductCatalogService {
     @Transactional(readOnly = true)
     public CategoryTreeDto getCategoryTree(UUID categoryId, double latitude, double longitude) {
         CategoryResponseDto category = catalogCategoryService.getCategoryById(categoryId);
+        // Customers must never see an inactive category (same 404 as a category that does not exist).
+        if (!category.isActive()) {
+            throw new BusinessException("CATALOG_CATEGORY_NOT_FOUND", "Category not found", HttpStatus.NOT_FOUND);
+        }
         return buildCategoryTree(category, latitude, longitude);
     }
 
@@ -262,7 +267,7 @@ public class ProductCatalogServiceImpl implements ProductCatalogService {
     // ─────────────────────────────────────────────────────────────────────
 
     private CategoryTreeDto buildCategoryTree(CategoryResponseDto category, double latitude, double longitude) {
-        List<SubcategoryTreeDto> subcategoryTrees = catalogSubcategoryService.listByCategory(category.getId()).stream()
+        List<SubcategoryTreeDto> subcategoryTrees = catalogSubcategoryService.listActiveByCategory(category.getId()).stream()
                 .map(subcategory -> buildSubcategoryTree(subcategory, latitude, longitude))
                 .collect(Collectors.toList());
 

@@ -16,6 +16,11 @@ import java.util.UUID;
  * all before this. Optional and single: omit it to leave the existing image unchanged
  * (on update) or create with no image (on create); the old Cloudinary asset is
  * auto-deleted on replace.
+ *
+ * <p>There is deliberately NO {@code displayOrder} here. A new subcategory is appended to
+ * the bottom of its category by the server, and the order is changed only through
+ * {@code PATCH /api/admin/catalog/subcategories/{id}/move}. A {@code displayOrder} field
+ * sent by an older client is simply ignored.
  */
 @Getter
 @Setter
@@ -30,6 +35,4 @@ public class SubcategoryRequestDto {
 
     /** Optional subcategory icon/image (jpg/jpeg/png/webp). Omit to leave unchanged. */
     private MultipartFile image;
-
-    private int displayOrder = 0;
 }

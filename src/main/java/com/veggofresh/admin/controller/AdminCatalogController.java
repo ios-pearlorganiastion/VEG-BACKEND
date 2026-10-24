@@ -1,10 +1,12 @@
 package com.veggofresh.admin.controller;
 
+import com.veggofresh.admin.dto.request.CatalogMoveRequestDto;
 import com.veggofresh.admin.dto.request.CategoryRequestDto;
 import com.veggofresh.admin.dto.request.ProductCreateRequestDto;
 import com.veggofresh.admin.dto.request.ProductImageReorderRequestDto;
 import com.veggofresh.admin.dto.request.ProductRequestDto;
 import com.veggofresh.admin.dto.request.SubcategoryRequestDto;
+import com.veggofresh.admin.dto.response.CatalogMoveResultDto;
 import com.veggofresh.admin.dto.response.CategoryResponseDto;
 import com.veggofresh.admin.dto.response.CategoryTreeDto;
 import com.veggofresh.admin.dto.response.ProductImageResponseDto;
@@ -15,12 +17,15 @@ import com.veggofresh.admin.service.CatalogCategoryService;
 import com.veggofresh.admin.service.CatalogSubcategoryService;
 import com.veggofresh.admin.service.CatalogTreeService;
 import com.veggofresh.platform.common.ApiResponse;
+import com.veggofresh.platform.common.PageResponse;
+import com.veggofresh.platform.exception.BusinessException;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
@@ -35,18 +40,22 @@ import java.util.UUID;
  *
  * <pre>
  * ── Categories ───────────────────────────────────────────────
- * GET    /api/admin/catalog/categories?includeInactive=
- * POST   /api/admin/catalog/categories                    -- multipart/form-data (name, description, image?, displayOrder)
+ * GET    /api/admin/catalog/categories?includeInactive=   -- plain list (unpaginated); kept until the admin panel moves to /search
+ * GET    /api/admin/catalog/categories/search?search=&status=&page=&size=  -- NEW paginated list/type-ahead, ALL categories, display order
+ * POST   /api/admin/catalog/categories                    -- multipart/form-data (name, description, image?) -- appended to the bottom
  * GET    /api/admin/catalog/categories/{id}
  * PUT    /api/admin/catalog/categories/{id}                -- multipart/form-data (image optional -- omit to keep current)
  * PATCH  /api/admin/catalog/categories/{id}/status?active=
+ * PATCH  /api/admin/catalog/categories/{id}/move               -- NEW JSON { "afterId": uuid } OR { "position": n }
  *
  * ── Subcategories ────────────────────────────────────────────
- * GET    /api/admin/catalog/subcategories?categoryId=
- * POST   /api/admin/catalog/subcategories                 -- multipart/form-data (categoryId, name, image?, displayOrder)
+ * GET    /api/admin/catalog/subcategories?categoryId=      -- plain list (unpaginated); kept until the admin panel moves to /search
+ * GET    /api/admin/catalog/subcategories/search?categoryId=&search=&status=&page=&size=  -- NEW paginated list/type-ahead, ALL subcategories of a category
+ * POST   /api/admin/catalog/subcategories                 -- multipart/form-data (categoryId, name, image?) -- appended to the bottom of its category
  * GET    /api/admin/catalog/subcategories/{id}
  * PUT    /api/admin/catalog/subcategories/{id}             -- multipart/form-data (image optional -- omit to keep current)
  * PATCH  /api/admin/catalog/subcategories/{id}/status?active=
+ * PATCH  /api/admin/catalog/subcategories/{id}/move            -- NEW JSON { "afterId": uuid } OR { "position": n }
  *
  * ── Products ─────────────────────────────────────────────────
  * GET    /api/admin/catalog/products?search=&categoryId=&subcategoryId=&page=&size=
@@ -90,6 +99,23 @@ public class AdminCatalogController {
                 categoryService.listCategories(includeInactive), "Categories retrieved successfully"));
     }
 
+    /**
+     * Paginated list + type-ahead over ALL categories (active and inactive) in display order.
+     * {@code status}: all (default) | active | inactive. Works as the ordering screen's list
+     * (status=all, size ~30, infinite scroll) and as a picker/search box (search=..., size ~20).
+     */
+    @GetMapping("/categories/search")
+    public ResponseEntity<ApiResponse<PageResponse<CategoryResponseDto>>> searchCategories(
+            @RequestParam(required = false) String search,
+            @RequestParam(defaultValue = "all") String status,
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "20") int size) {
+        Page<CategoryResponseDto> result = categoryService.searchCategories(
+                search, parseStatus(status), PageRequest.of(Math.max(page, 0), clampSize(size)));
+        return ResponseEntity.ok(ApiResponse.success(
+                PageResponse.of(result), "Categories retrieved successfully"));
+    }
+
     @PostMapping(value = "/categories", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public ResponseEntity<ApiResponse<CategoryResponseDto>> createCategory(
             @Valid @ModelAttribute CategoryRequestDto request) {
@@ -118,6 +144,18 @@ public class AdminCatalogController {
                 active ? "Category activated successfully" : "Category deactivated successfully"));
     }
 
+    /**
+     * Moves one category within the full category list (active and inactive). Body: exactly one of
+     * {@code afterId} (place after this category) or {@code position} (1 = top; past the end = bottom).
+     * Returns the categories whose position changed so the panel can patch its local list.
+     */
+    @PatchMapping("/categories/{id}/move")
+    public ResponseEntity<ApiResponse<CatalogMoveResultDto>> moveCategory(
+            @PathVariable UUID id, @Valid @RequestBody CatalogMoveRequestDto request) {
+        return ResponseEntity.ok(ApiResponse.success(
+                categoryService.moveCategory(id, request), "Category moved successfully"));
+    }
+
     // ── SUBCATEGORIES ────────────────────────────────────────────────────
 
     @GetMapping("/subcategories")
@@ -125,6 +163,23 @@ public class AdminCatalogController {
             @RequestParam UUID categoryId) {
         return ResponseEntity.ok(ApiResponse.success(
                 subcategoryService.listByCategory(categoryId), "Subcategories retrieved successfully"));
+    }
+
+    /**
+     * Paginated list + type-ahead over ALL subcategories (active and inactive) of one category,
+     * in display order. {@code status}: all (default) | active | inactive.
+     */
+    @GetMapping("/subcategories/search")
+    public ResponseEntity<ApiResponse<PageResponse<SubcategoryResponseDto>>> searchSubcategories(
+            @RequestParam UUID categoryId,
+            @RequestParam(required = false) String search,
+            @RequestParam(defaultValue = "all") String status,
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "20") int size) {
+        Page<SubcategoryResponseDto> result = subcategoryService.searchSubcategories(
+                categoryId, search, parseStatus(status), PageRequest.of(Math.max(page, 0), clampSize(size)));
+        return ResponseEntity.ok(ApiResponse.success(
+                PageResponse.of(result), "Subcategories retrieved successfully"));
     }
 
     @PostMapping(value = "/subcategories", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
@@ -153,6 +208,17 @@ public class AdminCatalogController {
         return ResponseEntity.ok(ApiResponse.success(
                 subcategoryService.setActive(id, active),
                 active ? "Subcategory activated successfully" : "Subcategory deactivated successfully"));
+    }
+
+    /**
+     * Moves one subcategory within its own category's full list (active and inactive). Body: exactly
+     * one of {@code afterId} or {@code position} (1 = top; past the end = bottom).
+     */
+    @PatchMapping("/subcategories/{id}/move")
+    public ResponseEntity<ApiResponse<CatalogMoveResultDto>> moveSubcategory(
+            @PathVariable UUID id, @Valid @RequestBody CatalogMoveRequestDto request) {
+        return ResponseEntity.ok(ApiResponse.success(
+                subcategoryService.moveSubcategory(id, request), "Subcategory moved successfully"));
     }
 
     // ── PRODUCTS ─────────────────────────────────────────────────────────
@@ -244,5 +310,27 @@ public class AdminCatalogController {
     public ResponseEntity<ApiResponse<List<CategoryTreeDto>>> getFullCatalogTree() {
         return ResponseEntity.ok(ApiResponse.success(
                 catalogTreeService.getFullCatalogTree(), "Full catalog tree retrieved successfully"));
+    }
+
+    // ── HELPERS ──────────────────────────────────────────────────────────
+
+    /** status filter for /search: all (default) -> null, active -> TRUE, inactive -> FALSE. Case-insensitive. */
+    private static Boolean parseStatus(String status) {
+        if (status == null || status.isBlank() || status.equalsIgnoreCase("all")) {
+            return null;
+        }
+        if (status.equalsIgnoreCase("active")) {
+            return Boolean.TRUE;
+        }
+        if (status.equalsIgnoreCase("inactive")) {
+            return Boolean.FALSE;
+        }
+        throw new BusinessException("CATALOG_INVALID_STATUS_FILTER",
+                "status must be one of: all, active, inactive", HttpStatus.BAD_REQUEST);
+    }
+
+    /** Page size for /search is clamped to 1..100 per call. */
+    private static int clampSize(int size) {
+        return Math.min(Math.max(size, 1), 100);
     }
 }
