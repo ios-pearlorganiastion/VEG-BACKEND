@@ -21,6 +21,12 @@ public interface AdminProductService {
 
     ProductResponseDto getProductById(UUID id);
     java.util.Optional<ProductResponseDto> findProductById(UUID id);
+
+    /**
+     * Vendor price per product id (what the vendor is paid per unit). Ids that do not exist are simply absent
+     * from the result. Used at checkout to snapshot the vendor price onto order items.
+     */
+    java.util.Map<UUID, java.math.BigDecimal> getVendorPrices(java.util.Collection<UUID> productIds);
     Page<ProductResponseDto> searchProducts(String search, UUID categoryId, UUID subcategoryId, Pageable pageable);
     ProductResponseDto setActive(UUID id, boolean active);
 

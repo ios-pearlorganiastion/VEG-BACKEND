@@ -41,6 +41,12 @@ public class CartResponseDto {
     private String promoCode;
     private BigDecimal promoDiscount;
     /**
+     * A hint about the held coupon for this cart, e.g. "Add Rs 100 more to get this discount, or check out together
+     * with your other carts." Null when there is nothing to say. promoDiscount is what THIS cart gets if checked out
+     * alone; the checkout summary has the final amounts for the carts actually paid together.
+     */
+    private String promoMessage;
+    /**
      * Line items left in the cart whose product is no longer available. These
      * contribute to neither {@link #itemCount} nor {@link #totalAmount}, so the
      * client can explain to the customer why the count is lower than the number

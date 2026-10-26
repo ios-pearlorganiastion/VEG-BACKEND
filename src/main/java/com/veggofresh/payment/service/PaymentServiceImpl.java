@@ -1,6 +1,7 @@
 package com.veggofresh.payment.service;
 
 import com.veggofresh.admin.service.PlatformSettingsService;
+import com.veggofresh.coupon.service.CouponCheckoutService;
 import com.veggofresh.notification.entity.NotificationRecipientRole;
 import com.veggofresh.notification.entity.NotificationType;
 import com.veggofresh.notification.service.NotificationService;
@@ -54,6 +55,7 @@ public class PaymentServiceImpl implements PaymentService {
     private final com.veggofresh.payment.config.RazorpayProperties razorpayProperties;
     private final NotificationService notificationService;
     private final PlatformSettingsService platformSettingsService;
+    private final CouponCheckoutService couponService;
 
     @Override
     @Transactional
@@ -265,6 +267,10 @@ public class PaymentServiceImpl implements PaymentService {
     @Override
     @Transactional
     public void onOrderCancelled(UUID orderId) {
+        // Every cancellation path (customer cancel, vendor rejection, accept timeout, failed payment) ends here, so
+        // this is the one place the coupon share of the order is given back. Idempotent; a no-op without a coupon.
+        couponService.onOrderCancelled(orderId);
+
         Optional<PaymentOrderLine> lineOpt = paymentOrderLineRepository.findByOrderId(orderId);
         if (lineOpt.isEmpty()) {
             log.debug("onOrderCancelled: no payment line for orderId={}, skipping", orderId);
@@ -300,31 +306,34 @@ public class PaymentServiceImpl implements PaymentService {
 
     @Override
     @Transactional
-    public void onDeliveryCompleted(UUID orderId, BigDecimal orderSubtotal, BigDecimal deliveryFee,
-            UUID vendorUserId, UUID deliveryPartnerUserId) {
-        // Dynamic fee model: both delivery fee and platform fee are admin-configurable
-        // via PlatformSettings. No hardcoded rupee values here.
-        BigDecimal platformFee = platformSettingsService.getPlatformFeeAmount();
-
-        // Vendor receives full product subtotal; platform fee is an add-on charged to customer at checkout.
-        if (vendorUserId != null) {
-            walletService.credit(vendorUserId, orderSubtotal,
+    public void onDeliveryCompleted(UUID orderId, BigDecimal vendorAmount, BigDecimal deliveryFee,
+            BigDecimal platformAmount, UUID vendorUserId, UUID deliveryPartnerUserId) {
+        // The amounts are worked out by the caller from what was saved on the ORDER (vendor price snapshot,
+        // platform fee, coupon discount), so a later change of platform settings cannot alter an old order.
+        // A credit is only made for a positive amount: a zero/negative credit would be rejected by the wallet
+        // and would roll back the whole delivery completion.
+        if (vendorUserId != null && vendorAmount != null && vendorAmount.signum() > 0) {
+            walletService.credit(vendorUserId, vendorAmount,
                     WalletTransactionReason.ORDER_VENDOR_SETTLEMENT,
                     orderId, "Revenue from completed order");
         }
 
-        if (deliveryPartnerUserId != null) {
+        if (deliveryPartnerUserId != null && deliveryFee != null && deliveryFee.signum() > 0) {
             walletService.credit(deliveryPartnerUserId, deliveryFee,
                     WalletTransactionReason.ORDER_DELIVERY_SETTLEMENT,
                     orderId, "Delivery earnings for completed order (₹" + deliveryFee + ")");
         }
 
-        walletService.credit(WalletService.PLATFORM_WALLET_USER_ID, platformFee,
-                WalletTransactionReason.ORDER_PLATFORM_COMMISSION,
-                orderId, "Platform fee (₹" + platformFee + ") on completed order");
+        if (platformAmount != null && platformAmount.signum() > 0) {
+            walletService.credit(WalletService.PLATFORM_WALLET_USER_ID, platformAmount,
+                    WalletTransactionReason.ORDER_PLATFORM_COMMISSION,
+                    orderId, "Platform earning (₹" + platformAmount + ": fee + margin - coupon) on completed order");
+        } else {
+            log.info("Platform earning is zero for orderId={} (coupon used the whole margin and fee)", orderId);
+        }
 
-        log.info("Settlement complete: orderId={} vendorShare={} deliveryFee={} platformFee={}",
-                orderId, orderSubtotal, deliveryFee, platformFee);
+        log.info("Settlement complete: orderId={} vendorShare={} deliveryFee={} platformShare={}",
+                orderId, vendorAmount, deliveryFee, platformAmount);
     }
 
     // ─────────────────────────────────────────────────────────────────────

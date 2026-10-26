@@ -41,4 +41,10 @@ public class OrderRequestDto {
 
     /** Optional — ISO date string for scheduled delivery */
     private String scheduledDate;
+
+    /**
+     * Optional. A coupon code to use for THIS checkout (typed on the checkout screen). When omitted, the coupon the
+     * customer is holding (applied in the cart) is used. One coupon per checkout, whatever the number of carts.
+     */
+    private String couponCode;
 }

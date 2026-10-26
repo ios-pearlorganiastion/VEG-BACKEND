@@ -37,6 +37,13 @@ public class OrderItem extends BaseEntity {
     private BigDecimal price;
 
     /**
+     * What the vendor is paid per unit for this line, snapshotted at checkout together with price. NULL on
+     * orders placed before vendor prices existed, which means "use price" (the old behaviour).
+     */
+    @Column(name = "vendor_unit_price", precision = 10, scale = 2)
+    private BigDecimal vendorUnitPrice;
+
+    /**
      * Snapshotted at checkout time, same moment `price` already is (see
      * OrderServiceImpl.buildOrderFromCart()) -- NOT a live lookup. An order
      * from months ago must always show the pack size exactly as it was when

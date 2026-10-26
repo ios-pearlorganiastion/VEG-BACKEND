@@ -45,6 +45,14 @@ public class ProductCreateRequestDto {
     @Digits(integer = 8, fraction = 2)
     private BigDecimal originalPrice;
 
+    /**
+     * Optional. What the vendor is paid per unit (must be > 0 and not above price). On create, omitting it
+     * means "same as price" (no margin). On update, omitting it keeps the current vendor price.
+     */
+    @DecimalMin(value = "0.01", message = "vendorPrice must be greater than 0")
+    @Digits(integer = 8, fraction = 2)
+    private BigDecimal vendorPrice;
+
     @NotBlank(message = "unit is required, e.g. '1 kg', '6 pcs'")
     @Size(max = 100)
     private String unit;

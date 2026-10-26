@@ -104,7 +104,7 @@ public class VendorReportService {
         return order.getItems().stream()
                 .map(item -> {
                     if (vendorListingRepository.findByShopIdAndCatalogProductId(shopId, item.getProductId()).isPresent()) {
-                        return item.getPrice().multiply(BigDecimal.valueOf(item.getQuantity()));
+                        return item.vendorSubTotal();
                     }
                     return BigDecimal.ZERO;
                 })

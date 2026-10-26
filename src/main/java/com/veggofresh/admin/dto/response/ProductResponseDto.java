@@ -26,6 +26,10 @@ public class ProductResponseDto {
 
     /** null when there's no active discount -- see AdminProductServiceImpl.toDto(). */
     private BigDecimal originalPrice;
+    /** What the vendor is paid per unit (admin-only; never copied into customer responses). */
+    private BigDecimal vendorPrice;
+    /** price - vendorPrice: the platform margin per unit. */
+    private BigDecimal margin;
 
     private String unit;
 

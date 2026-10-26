@@ -1,6 +1,10 @@
 package com.veggofresh.customer.service.impl;
 
 import com.veggofresh.auth.dto.UserSummaryDto;
+import com.veggofresh.coupon.dto.CouponQuote;
+import com.veggofresh.coupon.dto.CouponReservation;
+import com.veggofresh.coupon.service.CouponCheckoutService;
+import com.veggofresh.coupon.service.CouponMath;
 import com.veggofresh.auth.service.UserLookupService;
 import com.veggofresh.customer.dto.request.CartItemRequestDto;
 import com.veggofresh.customer.dto.request.OrderRequestDto;
@@ -47,6 +51,7 @@ import com.veggofresh.platform.exception.BusinessException;
 import com.veggofresh.vendor.dto.ProductDto;
 import com.veggofresh.vendor.service.ProductCatalogService;
 import com.veggofresh.vendor.service.ShopLookupService;
+import com.veggofresh.admin.service.AdminProductService;
 import com.veggofresh.admin.service.PlatformSettingsService;
 
 import lombok.RequiredArgsConstructor;
@@ -65,8 +70,10 @@ import java.time.LocalDate;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
@@ -118,6 +125,7 @@ public class OrderServiceImpl implements OrderService {
     private final DeliverySlotRepository deliverySlotRepository;
     private final CustomerProfileRepository customerProfileRepository;
     private final ProductCatalogService productCatalogService;
+    private final AdminProductService adminProductService;
     private final CartService cartService;
     private final UserLookupService userLookupService;
     private final OrderResponseMapper orderResponseMapper;
@@ -127,6 +135,7 @@ public class OrderServiceImpl implements OrderService {
     private final ShopLookupService shopLookupService;
     private final PlatformSettingsService platformSettingsService;
     private final CartVendorResolver cartVendorResolver;
+    private final CouponCheckoutService couponService;
 
     @Override
     public CheckoutResultDto checkout(UUID userId, OrderRequestDto request) {
@@ -149,6 +158,8 @@ public class OrderServiceImpl implements OrderService {
         List<OrderResponseDto> createdOrders = new ArrayList<>();
         List<CheckoutIssueDto> issues = new ArrayList<>();
         List<Order> placedOrders = new ArrayList<>();
+        List<Order> toPlace = new ArrayList<>();
+        List<UUID> toPlaceCartIds = new ArrayList<>();
 
         // ── Selective checkout ──
         // cartIds null/empty -> every open cart (backward compatible).
@@ -201,18 +212,48 @@ public class OrderServiceImpl implements OrderService {
                 continue;
             }
 
-            Order order = buildOrderFromCart(userId, cart, address, slot, request, vendors.effectiveVendorIds(cart),
-                    shippable);
-            Order saved = orderRepository.save(order);
-            createdOrders.add(orderResponseMapper.mapToDto(saved));
-            placedOrders.add(saved);
-
-            cartService.clearCart(userId, cart.getId());
+            // Built here but only saved below: the coupon is one coupon for the whole checkout, so it can only be
+            // valued once every order of this checkout is known.
+            toPlace.add(buildOrderFromCart(userId, cart, address, slot, request, vendors.effectiveVendorIds(cart),
+                    shippable));
+            toPlaceCartIds.add(cart.getId());
         }
 
-        if (createdOrders.isEmpty()) {
+        if (toPlace.isEmpty()) {
             throw new BusinessException("CHECKOUT_FAILED",
                     "None of your carts could be checked out — please review the issues", HttpStatus.BAD_REQUEST);
+        }
+
+        // ── One coupon for the whole checkout (single cart, several carts or all carts) ──
+        // Re-validated from scratch under a lock on the coupon, and the use is recorded in this same transaction.
+        // A dead coupon stops the checkout here with a clear message (nothing has been charged); a coupon that
+        // simply does not fit these carts (minimum order, no margin) gives no discount and is kept by the customer.
+        List<CouponMath.Basis> bases = new ArrayList<>(toPlace.size());
+        for (Order order : toPlace) {
+            bases.add(couponBasis(order));
+        }
+        CouponReservation coupon = couponService.reserve(userId, request.getCouponCode(), bases);
+        for (Order order : toPlace) {
+            BigDecimal share = coupon.shareOf(order.getSourceCartId());
+            if (share.signum() > 0) {
+                applyPromo(order, coupon.code(), share);
+            }
+        }
+
+        Map<UUID, BigDecimal> shareByOrderId = new LinkedHashMap<>();
+        for (int i = 0; i < toPlace.size(); i++) {
+            Order saved = orderRepository.save(toPlace.get(i));
+            createdOrders.add(orderResponseMapper.mapToDto(saved));
+            placedOrders.add(saved);
+            BigDecimal share = coupon.shareOf(saved.getSourceCartId());
+            if (share.signum() > 0) {
+                shareByOrderId.put(saved.getId(), share);
+            }
+
+            cartService.clearCart(userId, toPlaceCartIds.get(i));
+        }
+        if (coupon.hasDiscount()) {
+            couponService.linkOrders(coupon.redemptionId(), shareByOrderId);
         }
 
         // PAYMENT INTEGRATION: create a single Razorpay order (hold) covering all
@@ -239,7 +280,31 @@ public class OrderServiceImpl implements OrderService {
                 .orders(createdOrders)
                 .issues(issues)
                 .paymentHold(paymentHold)
+                .promoMessage(coupon.message())
                 .build();
+    }
+
+    /** What an order sells for and what the platform earns on it (selling price minus vendor price). */
+    private CouponMath.Basis couponBasis(Order order) {
+        BigDecimal items = BigDecimal.ZERO;
+        BigDecimal margin = BigDecimal.ZERO;
+        for (OrderItem item : order.getItems()) {
+            BigDecimal qty = BigDecimal.valueOf(item.getQuantity());
+            items = items.add(item.getPrice().multiply(qty));
+            BigDecimal vendorPrice = item.getVendorUnitPrice();
+            if (vendorPrice != null && vendorPrice.compareTo(item.getPrice()) < 0) {
+                margin = margin.add(item.getPrice().subtract(vendorPrice).multiply(qty));
+            }
+        }
+        return new CouponMath.Basis(order.getSourceCartId(), items, margin);
+    }
+
+    /** Puts this order's share of the checkout's coupon on it. The share is at most the items total. */
+    private void applyPromo(Order order, String code, BigDecimal discount) {
+        order.setPromoCode(code);
+        order.setPromoDiscount(discount);
+        BigDecimal total = order.getTotalAmount().subtract(discount);
+        order.setTotalAmount(total.compareTo(BigDecimal.ZERO) < 0 ? BigDecimal.ZERO : total);
     }
 
     private CheckoutIssueDto issue(Cart cart, String cartLabel, String reason) {
@@ -286,6 +351,9 @@ public class OrderServiceImpl implements OrderService {
         // used to abort checkout for Cart 2 and Cart 3 as well, and the
         // customer got a 400 for carts that were perfectly fine.
         CartVendorResolver.Session vendors = newVendorSession(address);
+        // Vendor price per product (what the vendor is paid), snapshotted onto each line below.
+        Map<UUID, BigDecimal> vendorPrices = adminProductService.getVendorPrices(
+                shippableItems.stream().map(CartItem::getProductId).collect(Collectors.toSet()));
         for (CartItem item : shippableItems) {
             ProductDto product = safeGetProduct(item.getProductId(), vendors);
             if (product == null || product.getPrice() == null) {
@@ -297,6 +365,10 @@ public class OrderServiceImpl implements OrderService {
             orderItem.setProductId(item.getProductId());
             orderItem.setQuantity(item.getQuantity());
             orderItem.setPrice(product.getPrice());
+            // Never above the selling price (so the margin can never be negative), and never null.
+            BigDecimal vendorPrice = vendorPrices.get(item.getProductId());
+            orderItem.setVendorUnitPrice(vendorPrice == null || vendorPrice.compareTo(product.getPrice()) > 0
+                    ? product.getPrice() : vendorPrice);
             orderItem.setUnit(product.getUnit());
             orderItems.add(orderItem);
 
@@ -331,13 +403,10 @@ public class OrderServiceImpl implements OrderService {
             order.setPaymentMethodId(request.getPaymentMethodId().toString());
         }
 
-        // PHASE 1 FIX: read the cart's real, already-validated promo instead
-        // of hardcoding zero. Previously CouponService was injected here but
-        // never actually called — promoDiscount was always ZERO regardless
-        // of what the customer had applied in the cart.
-        BigDecimal promoDiscount = capAtSubtotal(
-                cart.getPromoDiscount() != null ? cart.getPromoDiscount() : BigDecimal.ZERO, subtotal);
-        order.setPromoCode(cart.getPromoCode());
+        // No coupon yet: it is valued once for the whole checkout (see checkout()) and each order's share is
+        // put on by applyPromo() before the order is saved.
+        BigDecimal promoDiscount = BigDecimal.ZERO;
+        order.setPromoCode(null);
 
         BigDecimal deliveryFee = platformSettingsService.getDeliveryFeeAmount();
         BigDecimal platformFee = platformSettingsService.getPlatformFeeAmount();
@@ -354,11 +423,6 @@ public class OrderServiceImpl implements OrderService {
         order.setTotalAmount(total.compareTo(BigDecimal.ZERO) < 0 ? BigDecimal.ZERO : total);
 
         return order;
-    }
-
-    /** A discount can never exceed what it discounts. */
-    private BigDecimal capAtSubtotal(BigDecimal discount, BigDecimal subtotal) {
-        return discount.compareTo(subtotal) > 0 ? subtotal : discount;
     }
 
     /**
@@ -636,8 +700,11 @@ public class OrderServiceImpl implements OrderService {
             }
         } else if (newStatus == OrderStatus.DELIVERED)
             order.setDeliveredAt(Instant.now());
-        else if (newStatus == OrderStatus.CANCELLED)
+        else if (newStatus == OrderStatus.CANCELLED) {
             order.setCancelledAt(Instant.now());
+            // Its share of the coupon goes back (idempotent; no-op when the order had no coupon).
+            couponService.onOrderCancelled(orderId);
+        }
 
         Order saved = orderRepository.save(order);
 
@@ -897,7 +964,7 @@ public class OrderServiceImpl implements OrderService {
 
     @Override
     @Transactional(readOnly = true)
-    public CheckoutSummaryDto getCheckoutSummary(UUID userId, UUID addressId, List<UUID> cartIds) {
+    public CheckoutSummaryDto getCheckoutSummary(UUID userId, UUID addressId, List<UUID> cartIds, String couponCode) {
         Address address = addressRepository.findByIdAndUserId(addressId, userId)
                 .orElseThrow(() -> new BusinessException("ADDRESS_NOT_FOUND", "Invalid address selected",
                         HttpStatus.BAD_REQUEST));
@@ -919,6 +986,9 @@ public class OrderServiceImpl implements OrderService {
         List<CheckoutIssueDto> issues = new ArrayList<>();
         int totalItemCount = 0;
         BigDecimal grandTotal = BigDecimal.ZERO;
+        List<SummaryLine> couponLines = new ArrayList<>();
+        List<UUID> couponCartIds = new ArrayList<>();
+        Map<UUID, BigDecimal> couponItemsByCart = new LinkedHashMap<>();
 
         // Optional filtering: summarise only the requested carts.
         // cartIds null/empty -> summarise every open cart (backward compatible).
@@ -971,15 +1041,14 @@ public class OrderServiceImpl implements OrderService {
                 // number on the cart page and a different one at checkout.
                 itemCount += item.getQuantity();
                 subtotal = subtotal.add(product.getPrice().multiply(BigDecimal.valueOf(item.getQuantity())));
+                couponLines.add(new SummaryLine(cart.getId(), item.getProductId(), product.getPrice(), item.getQuantity()));
             }
+            couponCartIds.add(cart.getId());
+            couponItemsByCart.put(cart.getId(), subtotal);
 
-            // PHASE 1 FIX: read the cart's real promo instead of hardcoding zero.
-            BigDecimal promoDiscount = capAtSubtotal(
-                    cart.getPromoDiscount() != null ? cart.getPromoDiscount() : BigDecimal.ZERO, subtotal);
-            BigDecimal total = subtotal.add(deliveryFee).add(estimatedTax).subtract(promoDiscount);
-            if (total.compareTo(BigDecimal.ZERO) < 0) {
-                total = BigDecimal.ZERO;
-            }
+            // The coupon is valued once for all the carts together, after this loop; until then no discount.
+            BigDecimal promoDiscount = BigDecimal.ZERO;
+            BigDecimal total = subtotal.add(deliveryFee).add(estimatedTax);
 
             breakdowns.add(CartCheckoutBreakdownDto.builder()
                     .cartId(cart.getId())
@@ -990,7 +1059,7 @@ public class OrderServiceImpl implements OrderService {
                     .deliveryFee(deliveryFee)
                     .estimatedTax(estimatedTax)
                     .promoDiscount(promoDiscount)
-                    .promoCode(cart.getPromoCode())
+                    .promoCode(null)
                     .total(total)
                     .build());
 
@@ -1011,11 +1080,48 @@ public class OrderServiceImpl implements OrderService {
                     "None of your carts can be delivered to this address right now", HttpStatus.BAD_REQUEST);
         }
 
+        // ── One coupon for exactly the carts being paid here ──
+        Map<UUID, BigDecimal> vendorPrices = couponLines.isEmpty() ? Map.of()
+                : adminProductService.getVendorPrices(
+                        couponLines.stream().map(SummaryLine::productId).collect(Collectors.toSet()));
+        Map<UUID, BigDecimal> marginByCart = new LinkedHashMap<>();
+        for (SummaryLine line : couponLines) {
+            BigDecimal vendorPrice = vendorPrices.get(line.productId());
+            if (vendorPrice != null && vendorPrice.compareTo(line.price()) < 0) {
+                marginByCart.merge(line.cartId(),
+                        line.price().subtract(vendorPrice).multiply(BigDecimal.valueOf(line.quantity())),
+                        BigDecimal::add);
+            }
+        }
+        List<CouponMath.Basis> bases = new ArrayList<>(couponCartIds.size());
+        for (UUID cartId : couponCartIds) {
+            bases.add(new CouponMath.Basis(cartId, couponItemsByCart.get(cartId),
+                    marginByCart.getOrDefault(cartId, BigDecimal.ZERO)));
+        }
+        CouponQuote quote = couponService.quote(userId, couponCode, bases);
+
+        grandTotal = BigDecimal.ZERO;
+        for (CartCheckoutBreakdownDto b : breakdowns) {
+            BigDecimal share = quote.shareOf(b.getCartId());
+            BigDecimal total = b.getSubtotal().add(b.getDeliveryFee()).add(b.getEstimatedTax()).subtract(share);
+            if (total.compareTo(BigDecimal.ZERO) < 0) {
+                total = BigDecimal.ZERO;
+            }
+            b.setPromoDiscount(share);
+            b.setPromoCode(share.signum() > 0 ? quote.code() : null);
+            b.setTotal(total);
+            grandTotal = grandTotal.add(total);
+        }
+
         return CheckoutSummaryDto.builder()
                 .carts(breakdowns)
                 .totalItemCount(totalItemCount)
                 .grandTotal(grandTotal)
                 .issues(issues)
+                .promoCode(quote.status() == CouponQuote.Status.APPLIED ? quote.code() : null)
+                .promoDiscount(quote.total())
+                .promoStatus(quote.status().name())
+                .promoMessage(quote.message())
                 .build();
     }
 
@@ -1037,6 +1143,10 @@ public class OrderServiceImpl implements OrderService {
      */
     private ProductDto safeGetProduct(UUID productId, CartVendorResolver.Session vendors) {
         return vendors.productFor(productId);
+    }
+
+    /** One cart line of the checkout summary, kept so the margin can be worked out after the loop. */
+    private record SummaryLine(UUID cartId, UUID productId, BigDecimal price, int quantity) {
     }
 
     /**

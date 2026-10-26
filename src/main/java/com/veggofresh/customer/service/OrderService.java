@@ -65,6 +65,9 @@ public interface OrderService {
      * PHASE 2 (updated) — per-cart breakdown for the carts the customer intends to check out.
      * cartIds null or empty → summarise all open carts.
      * cartIds non-empty   → only those carts; others are excluded from the preview.
+     *
+     * <p>couponCode (optional) is the coupon typed on the checkout screen; when null the coupon the customer is
+     * holding is used. The coupon is valued on the COMBINED carts being paid, as one coupon.
      */
-    CheckoutSummaryDto getCheckoutSummary(UUID userId, UUID addressId, List<UUID> cartIds);
+    CheckoutSummaryDto getCheckoutSummary(UUID userId, UUID addressId, List<UUID> cartIds, String couponCode);
 }

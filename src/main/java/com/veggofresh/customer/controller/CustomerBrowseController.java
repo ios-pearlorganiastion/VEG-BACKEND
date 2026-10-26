@@ -145,12 +145,6 @@ public class CustomerBrowseController {
         return ResponseEntity.ok(ApiResponse.success(deals, "Daily deals retrieved successfully"));
     }
 
-    @GetMapping("/banners")
-    public ResponseEntity<ApiResponse<List<Map<String, String>>>> getBanners() {
-        List<Map<String, String>> banners = List.of(
-                Map.of("id", UUID.randomUUID().toString(), "title", "Fresh Organic Veggies", "subtitle", "Get up to 20% off today", "imageUrl", "https://veggofresh.com/banners/organic.png"),
-                Map.of("id", UUID.randomUUID().toString(), "title", "Juicy Summer Fruits", "subtitle", "Flat 10% discount", "imageUrl", "https://veggofresh.com/banners/fruits.png")
-        );
-        return ResponseEntity.ok(ApiResponse.success(banners, "Hero banners retrieved successfully"));
-    }
+    // GET /api/customer/banners now lives in com.veggofresh.banner.controller.CustomerBannerController
+    // (admin-managed banners from the database instead of two hard-coded fake ones).
 }

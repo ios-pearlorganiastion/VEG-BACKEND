@@ -49,7 +49,7 @@ public class VendorStatsServiceImpl implements VendorStatsService {
                 .filter(order -> "DELIVERED".equals(order.getStatus()))
                 .flatMap(order -> order.getItems().stream())
                 .filter(item -> belongsToShop(item.getProductId(), shop.getId()))
-                .map(item -> item.getSubTotal())
+                .map(item -> item.vendorSubTotal())
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
 
         long activeItemsCount = vendorListingRepository.countByShopIdAndIsListedTrue(shop.getId());

@@ -170,9 +170,10 @@ public class CustomerOrderController {
     @GetMapping("/checkout/summary")
     public ResponseEntity<ApiResponse<CheckoutSummaryDto>> getCheckoutSummary(
             @RequestParam UUID addressId,
-            @RequestParam(required = false) List<UUID> cartIds) {
+            @RequestParam(required = false) List<UUID> cartIds,
+            @RequestParam(required = false) String couponCode) {
         CheckoutSummaryDto summary = orderService.getCheckoutSummary(
-                SecurityUtils.getCurrentUserId(), addressId, cartIds);
+                SecurityUtils.getCurrentUserId(), addressId, cartIds, couponCode);
         return ResponseEntity.ok(ApiResponse.success(summary, "Checkout summary retrieved successfully"));
     }
 

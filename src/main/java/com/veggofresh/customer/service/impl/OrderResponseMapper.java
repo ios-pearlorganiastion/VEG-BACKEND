@@ -61,6 +61,7 @@ public class OrderResponseMapper {
                             .productName(name)
                             .quantity(item.getQuantity())
                             .price(item.getPrice())
+                            .vendorUnitPrice(item.getVendorUnitPrice())
                             .unit(item.getUnit())
                             .subTotal(item.getPrice().multiply(BigDecimal.valueOf(item.getQuantity())))
                             .build();

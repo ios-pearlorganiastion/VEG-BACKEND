@@ -374,15 +374,24 @@ public class DeliveryAssignmentServiceImpl implements DeliveryAssignmentService 
 
         try {
             orderRepository.findById(orderId).ifPresent(order -> {
-                BigDecimal subtotal = order.getItems() != null ? order.getItems().stream()
-                        .map(i -> i.getPrice().multiply(BigDecimal.valueOf(i.getQuantity())))
-                        .reduce(BigDecimal.ZERO, BigDecimal::add) : BigDecimal.ZERO;
+                // Vendor is paid the admin-set vendor price (snapshotted on each item); the platform keeps
+                // platform fee + margin - coupon discount. Everything comes from what was saved on the order.
+                java.util.List<DeliverySettlementMath.Line> lines = order.getItems() == null
+                        ? java.util.List.of()
+                        : order.getItems().stream()
+                                .map(i -> new DeliverySettlementMath.Line(i.getPrice(), i.getVendorUnitPrice(), i.getQuantity()))
+                                .collect(java.util.stream.Collectors.toList());
+                BigDecimal platformFee = order.getEstimatedTax() != null ? order.getEstimatedTax()
+                        : platformSettingsService.getPlatformFeeAmount();
+                DeliverySettlementMath.Result money =
+                        DeliverySettlementMath.compute(lines, platformFee, order.getPromoDiscount());
                 BigDecimal deliveryFee = order.getDeliveryFee() != null ? order.getDeliveryFee()
                         : platformSettingsService.getDeliveryFeeAmount(); // fallback to admin-configured fee
                 UUID vendorUserId = order.getAcceptedShopId() != null
                         ? shopLookupService.findOwnerUserIdByShopId(order.getAcceptedShopId()).orElse(null)
                         : null;
-                paymentService.onDeliveryCompleted(orderId, subtotal, deliveryFee, vendorUserId, deliveryPartnerUserId);
+                paymentService.onDeliveryCompleted(orderId, money.vendorAmount(), deliveryFee,
+                        money.platformAmount(), vendorUserId, deliveryPartnerUserId);
             });
         } catch (Exception e) {
             log.error("Failed to execute payment settlement for delivered order {}: {}", orderId, e.getMessage(), e);

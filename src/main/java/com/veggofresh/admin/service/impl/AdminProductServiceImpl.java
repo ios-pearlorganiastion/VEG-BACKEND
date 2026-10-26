@@ -26,7 +26,10 @@ import org.springframework.web.multipart.MultipartFile;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.util.Collection;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.stream.Collectors;
@@ -67,6 +70,9 @@ public class AdminProductServiceImpl implements AdminProductService {
         product.setPrice(request.getPrice());
         validateOriginalPrice(request.getPrice(), request.getOriginalPrice());
         product.setOriginalPrice(request.getOriginalPrice());
+        BigDecimal vendorPrice = request.getVendorPrice() != null ? request.getVendorPrice() : request.getPrice();
+        validateVendorPrice(request.getPrice(), vendorPrice);
+        product.setVendorPrice(vendorPrice);
         product.setUnit(request.getUnit());
         product.setActive(true);
         product = productRepository.save(product);
@@ -102,6 +108,9 @@ public class AdminProductServiceImpl implements AdminProductService {
         product.setPrice(request.getPrice());
         validateOriginalPrice(request.getPrice(), request.getOriginalPrice());
         product.setOriginalPrice(request.getOriginalPrice());
+        BigDecimal vendorPrice = request.getVendorPrice() != null ? request.getVendorPrice() : product.getVendorPrice();
+        validateVendorPrice(request.getPrice(), vendorPrice);
+        product.setVendorPrice(vendorPrice);
         product.setUnit(request.getUnit());
         return toDto(productRepository.save(product));
     }
@@ -116,6 +125,19 @@ public class AdminProductServiceImpl implements AdminProductService {
     @Transactional(readOnly = true)
     public Optional<ProductResponseDto> findProductById(UUID id) {
         return productRepository.findById(id).map(this::toDto);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Map<UUID, BigDecimal> getVendorPrices(Collection<UUID> productIds) {
+        Map<UUID, BigDecimal> result = new HashMap<>();
+        if (productIds == null || productIds.isEmpty()) {
+            return result;
+        }
+        for (CatalogProduct p : productRepository.findAllById(productIds)) {
+            result.put(p.getId(), p.getVendorPrice() != null ? p.getVendorPrice() : p.getPrice());
+        }
+        return result;
     }
 
     @Override
@@ -241,6 +263,22 @@ public class AdminProductServiceImpl implements AdminProductService {
         }
     }
 
+    /**
+     * The vendor can never be paid more than the customer pays: a vendor price above the price would make the
+     * platform lose money on every sale. If you lower price you must lower vendorPrice too.
+     */
+    private void validateVendorPrice(BigDecimal price, BigDecimal vendorPrice) {
+        if (vendorPrice == null || vendorPrice.signum() <= 0) {
+            throw new BusinessException("CATALOG_PRODUCT_INVALID_VENDOR_PRICE",
+                    "vendorPrice must be greater than 0", HttpStatus.BAD_REQUEST);
+        }
+        if (vendorPrice.compareTo(price) > 0) {
+            throw new BusinessException("CATALOG_PRODUCT_INVALID_VENDOR_PRICE",
+                    "vendorPrice must not be greater than price. If you are lowering the price, "
+                            + "also lower vendorPrice.", HttpStatus.BAD_REQUEST);
+        }
+    }
+
     private CatalogProduct getEntity(UUID id) {
         return productRepository.findById(id)
                 .orElseThrow(() -> new BusinessException("CATALOG_PRODUCT_NOT_FOUND",
@@ -282,6 +320,8 @@ public class AdminProductServiceImpl implements AdminProductService {
                 .subcategoryName(p.getSubcategory().getName())
                 .price(p.getPrice())
                 .originalPrice(p.getOriginalPrice())
+                .vendorPrice(p.getVendorPrice() != null ? p.getVendorPrice() : p.getPrice())
+                .margin(p.getPrice().subtract(p.getVendorPrice() != null ? p.getVendorPrice() : p.getPrice()))
                 .unit(p.getUnit())
                 .discountPercent(computeDiscountPercent(p.getPrice(), p.getOriginalPrice()))
                 .imageUrl(coverImageUrl)

@@ -35,4 +35,13 @@ public class CheckoutSummaryDto {
      * charged, rather than a total that silently shrinks on submit.
      */
     private List<CheckoutIssueDto> issues;
+
+    /** The coupon used for these carts (null when none applied). */
+    private String promoCode;
+    /** The whole discount of this checkout; each cart's share is in its breakdown. */
+    private BigDecimal promoDiscount;
+    /** NONE, APPLIED, NOT_APPLICABLE or INVALID. */
+    private String promoStatus;
+    /** A readable line for the customer, e.g. "Add Rs 100 more to get this discount". Null when nothing to say. */
+    private String promoMessage;
 }

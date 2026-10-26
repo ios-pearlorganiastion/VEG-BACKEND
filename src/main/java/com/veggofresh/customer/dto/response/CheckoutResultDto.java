@@ -28,4 +28,7 @@ public class CheckoutResultDto {
     private List<CheckoutIssueDto> issues;
     /** Razorpay payment hold — use razorpayOrderId + razorpayKeyId to open Checkout.js */
     private PaymentHoldResponseDto paymentHold;
+
+    /** Set when a coupon was held/given but did not fit these carts, so no discount was applied. */
+    private String promoMessage;
 }

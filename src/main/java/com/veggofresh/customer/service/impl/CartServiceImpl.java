@@ -1,7 +1,10 @@
 package com.veggofresh.customer.service.impl;
 
-import com.veggofresh.admin.service.CouponService;
+import com.veggofresh.admin.service.AdminProductService;
 import com.veggofresh.admin.service.PlatformSettingsService;
+import com.veggofresh.coupon.dto.CouponPreview;
+import com.veggofresh.coupon.service.CouponCheckoutService;
+import com.veggofresh.coupon.service.CouponMath;
 import com.veggofresh.customer.dto.request.CartItemRequestDto;
 import com.veggofresh.customer.dto.response.CartItemResponseDto;
 import com.veggofresh.customer.dto.response.CartResponseDto;
@@ -78,7 +81,8 @@ public class CartServiceImpl implements CartService {
     private final CartItemRepository cartItemRepository;
     private final AddressRepository addressRepository;
     private final ProductCatalogService productCatalogService;
-    private final CouponService couponService;
+    private final CouponCheckoutService couponService;
+    private final AdminProductService adminProductService;
     private final PlatformSettingsService platformSettingsService;
     private final CartVendorResolver cartVendorResolver;
 
@@ -148,7 +152,6 @@ public class CartServiceImpl implements CartService {
         // reused for the promo recheck below, so this add costs one pass of
         // vendor lookups, not two.
         vendors.resync(targetCart);
-        recomputePromo(targetCart, vendors);
         cartRepository.save(targetCart);
 
         return toResponses(userId, vendors);
@@ -176,7 +179,6 @@ public class CartServiceImpl implements CartService {
         Cart cart = item.getCart();
         CartVendorResolver.Session vendors = newSessionFor(cart.getUserId());
         vendors.resync(cart);
-        recomputePromo(cart, vendors);
         cartRepository.save(cart);
 
         return toResponses(userId, vendors);
@@ -204,7 +206,6 @@ public class CartServiceImpl implements CartService {
         // so a ghost is never left open.
         CartVendorResolver.Session vendors = newSessionFor(cart.getUserId());
         vendors.resync(cart);
-        recomputePromo(cart, vendors);
         cartRepository.save(cart);
 
         retireIfEmptied(cart);
@@ -284,35 +285,19 @@ public class CartServiceImpl implements CartService {
             throw new BusinessException("CART_EMPTY", "This cart has no items to discount", HttpStatus.BAD_REQUEST);
         }
 
-        CartVendorResolver.Session vendors = newSessionFor(userId);
-        BigDecimal subtotal = computeSubtotal(cart, vendors);
-        if (subtotal.compareTo(BigDecimal.ZERO) <= 0) {
-            throw new BusinessException("PROMO_NOT_APPLICABLE",
-                    "This cart has nothing discountable right now", HttpStatus.BAD_REQUEST);
-        }
-
-        BigDecimal discount = couponService.validateCoupon(code, subtotal);
-        if (discount == null || discount.compareTo(BigDecimal.ZERO) <= 0) {
-            throw new BusinessException("INVALID_PROMO_CODE", "The promo code is invalid or does not meet criteria",
-                    HttpStatus.BAD_REQUEST);
-        }
-
-        // A discount is only ever worth what it is applied to. Capping here
-        // means the checkout total can never be driven negative by a coupon
-        // that was validated against a different (larger) basis.
-        cart.setPromoCode(code);
-        cart.setPromoDiscount(capAtSubtotal(discount, subtotal));
-        cartRepository.save(cart);
+        // The coupon belongs to the customer, not to this cart (the cart id only proves the caller owns a cart).
+        // Only the rules that do not depend on the amount are checked here; what it is worth is decided at
+        // checkout, from the carts actually being paid. A specific BusinessException is thrown when it can never
+        // work for this customer (unknown, off, expired, limit reached, not for them).
+        couponService.select(userId, code);
 
         return toResponses(userId);
     }
 
     @Override
     public List<CartResponseDto> removePromoCode(UUID userId, UUID cartId) {
-        Cart cart = requireOwnedCart(cartId, userId);
-        cart.setPromoCode(null);
-        cart.setPromoDiscount(null);
-        cartRepository.save(cart);
+        requireOwnedCart(cartId, userId);
+        couponService.clearSelection(userId);
         return toResponses(userId);
     }
 
@@ -354,10 +339,11 @@ public class CartServiceImpl implements CartService {
         BigDecimal deliveryFee = platformSettingsService.getDeliveryFeeAmount();
         BigDecimal estimatedTax = platformSettingsService.getPlatformFeeAmount();
         Map<UUID, ProductDto> products = resolveProducts(carts, vendors);
+        CouponPreview preview = previewCoupon(userId, carts, products);
 
         List<CartResponseDto> responses = new ArrayList<>(carts.size());
         for (Cart cart : carts) {
-            responses.add(mapToDto(cart, cartLabel(responses.size()), products, deliveryFee, estimatedTax));
+            responses.add(mapToDto(cart, cartLabel(responses.size()), products, deliveryFee, estimatedTax, preview));
         }
         return responses;
     }
@@ -373,7 +359,7 @@ public class CartServiceImpl implements CartService {
     }
 
     private CartResponseDto mapToDto(Cart cart, String label, Map<UUID, ProductDto> products,
-            BigDecimal deliveryFee, BigDecimal estimatedTax) {
+            BigDecimal deliveryFee, BigDecimal estimatedTax, CouponPreview preview) {
         BigDecimal total = BigDecimal.ZERO;
         int itemCount = 0;
         int unavailableItemCount = 0;
@@ -404,7 +390,9 @@ public class CartServiceImpl implements CartService {
                     .build());
         }
 
-        BigDecimal promoDiscount = cart.getPromoDiscount() != null ? cart.getPromoDiscount() : BigDecimal.ZERO;
+        // What the coupon the customer is holding gives THIS cart if it were checked out alone. The checkout summary
+        // has the final amounts for the carts actually paid together.
+        BigDecimal promoDiscount = preview.discountOf(cart.getId());
         BigDecimal payable = total.add(deliveryFee).add(estimatedTax).subtract(promoDiscount);
         if (payable.compareTo(BigDecimal.ZERO) < 0) {
             payable = BigDecimal.ZERO;
@@ -421,8 +409,9 @@ public class CartServiceImpl implements CartService {
                 .estimatedTax(estimatedTax)
                 .payableAmount(payable)
                 .unavailableItemCount(unavailableItemCount)
-                .promoCode(cart.getPromoCode())
+                .promoCode(preview.code())
                 .promoDiscount(promoDiscount)
+                .promoMessage(preview.messageOf(cart.getId()))
                 .build();
     }
 
@@ -496,46 +485,43 @@ public class CartServiceImpl implements CartService {
         return products;
     }
 
-    private BigDecimal computeSubtotal(Cart cart, CartVendorResolver.Session vendors) {
-        BigDecimal subtotal = BigDecimal.ZERO;
-        for (CartItem item : cart.getItems()) {
-            ProductDto product = safeGetProduct(item.getProductId(), vendors);
-            if (product != null && product.getPrice() != null) {
-                subtotal = subtotal.add(product.getPrice().multiply(BigDecimal.valueOf(item.getQuantity())));
+    /**
+     * What the coupon the customer is holding would give each cart if that cart were paid alone. Skips all the
+     * pricing work (one cheap query) when the customer holds no coupon, which is the usual case.
+     */
+    private CouponPreview previewCoupon(UUID userId, List<Cart> carts, Map<UUID, ProductDto> products) {
+        if (carts.isEmpty() || !couponService.holdsCoupon(userId)) {
+            return CouponPreview.none();
+        }
+        java.util.Set<UUID> productIds = new java.util.HashSet<>();
+        for (Cart cart : carts) {
+            for (CartItem item : cart.getItems()) {
+                if (products.containsKey(item.getProductId())) {
+                    productIds.add(item.getProductId());
+                }
             }
         }
-        return subtotal;
-    }
+        Map<UUID, BigDecimal> vendorPrices = adminProductService.getVendorPrices(productIds);
 
-    /**
-     * Re-validates an applied promo against the cart's current subtotal, and
-     * drops it if it no longer qualifies — adding items must never be blocked by
-     * a promo that has stopped applying, and removing items must never leave a
-     * discount that is worth more than the cart.
-     *
-     * <p>Takes the caller's already-open {@link CartVendorResolver.Session} so
-     * promo revalidation reuses the vendor lookups the same operation has
-     * already made instead of issuing them again.
-     */
-    private void recomputePromo(Cart cart, CartVendorResolver.Session vendors) {
-        if (cart.getPromoCode() == null) {
-            return;
+        List<CouponMath.Basis> bases = new ArrayList<>(carts.size());
+        for (Cart cart : carts) {
+            BigDecimal items = BigDecimal.ZERO;
+            BigDecimal margin = BigDecimal.ZERO;
+            for (CartItem item : cart.getItems()) {
+                ProductDto product = products.get(item.getProductId());
+                if (product == null) {
+                    continue;
+                }
+                BigDecimal qty = BigDecimal.valueOf(item.getQuantity());
+                items = items.add(product.getPrice().multiply(qty));
+                BigDecimal vendorPrice = vendorPrices.get(item.getProductId());
+                if (vendorPrice != null && vendorPrice.compareTo(product.getPrice()) < 0) {
+                    margin = margin.add(product.getPrice().subtract(vendorPrice).multiply(qty));
+                }
+            }
+            bases.add(new CouponMath.Basis(cart.getId(), items, margin));
         }
-        BigDecimal subtotal = computeSubtotal(cart, vendors);
-        BigDecimal discount = subtotal.compareTo(BigDecimal.ZERO) > 0
-                ? couponService.validateCoupon(cart.getPromoCode(), subtotal)
-                : null;
-
-        if (discount == null || discount.compareTo(BigDecimal.ZERO) <= 0) {
-            cart.setPromoCode(null);
-            cart.setPromoDiscount(null);
-        } else {
-            cart.setPromoDiscount(capAtSubtotal(discount, subtotal));
-        }
-    }
-
-    private BigDecimal capAtSubtotal(BigDecimal discount, BigDecimal subtotal) {
-        return discount.compareTo(subtotal) > 0 ? subtotal : discount;
+        return couponService.previewEach(userId, bases);
     }
 
     /**

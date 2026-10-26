@@ -76,18 +76,18 @@ public interface PaymentService {
     void onOrderCancelled(UUID orderId);
 
     /**
-     * Called when a delivery is completed successfully. Splits the captured amount
-     * across vendor, delivery partner, and platform wallets according to the
-     * configured commission rate.
+     * Called when a delivery is completed successfully. Credits the vendor, the delivery partner and the
+     * platform wallet with the amounts worked out for this order (see DeliverySettlementMath).
      *
      * @param orderId               the delivered Customer Order id
-     * @param orderSubtotal         the order's subtotal (excluding delivery fee and tax -- vendor's basis)
+     * @param vendorAmount          what the vendor is paid (admin-set vendor price x quantity)
      * @param deliveryFee           the delivery fee (goes to delivery partner)
+     * @param platformAmount        what the platform keeps: platform fee + margin - coupon discount (never negative)
      * @param vendorUserId          the shop owner's user id
      * @param deliveryPartnerUserId the delivery partner's user id
      */
-    void onDeliveryCompleted(UUID orderId, BigDecimal orderSubtotal, BigDecimal deliveryFee,
-                             UUID vendorUserId, UUID deliveryPartnerUserId);
+    void onDeliveryCompleted(UUID orderId, BigDecimal vendorAmount, BigDecimal deliveryFee,
+                             BigDecimal platformAmount, UUID vendorUserId, UUID deliveryPartnerUserId);
 
     /**
      * Called when a customer wants to manually add funds to their wallet.

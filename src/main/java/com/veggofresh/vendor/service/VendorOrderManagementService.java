@@ -141,8 +141,9 @@ public class VendorOrderManagementService {
                 .map(VendorOrderItemDto::getSubTotal)
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
 
-        BigDecimal serviceFee = subtotal.multiply(SERVICE_FEE_PERCENT)
-                .divide(BigDecimal.valueOf(100), 2, RoundingMode.HALF_UP);
+        // subtotal is now the vendor's own payout (vendor price x quantity), so there is no extra "service fee"
+        // to add on top any more: the vendor receives exactly the subtotal.
+        BigDecimal serviceFee = BigDecimal.ZERO;
 
         VendorOrderDetailResponseDto.VendorOrderDetailResponseDtoBuilder builder = VendorOrderDetailResponseDto
                 .builder()
@@ -153,7 +154,7 @@ public class VendorOrderManagementService {
                 .latitude(order.getLatitude())
                 .longitude(order.getLongitude())
                 .subtotal(subtotal)
-                .serviceFeePercent(SERVICE_FEE_PERCENT)
+                .serviceFeePercent(BigDecimal.ZERO)
                 .serviceFee(serviceFee)
                 .totalForThisShop(subtotal.add(serviceFee))
                 .estimatedPayout(estimatedPayout(subtotal))
@@ -200,10 +201,24 @@ public class VendorOrderManagementService {
      * shared OrderResponseDto in place.
      */
     private void applyEstimatedPayout(OrderResponseDto order) {
-        BigDecimal subtotal = order.getItems().stream()
-                .map(OrderItemResponseDto::getSubTotal)
+        // What the vendor earns = admin-set vendor price x quantity (not what the customer pays).
+        BigDecimal payout = order.getItems().stream()
+                .map(OrderItemResponseDto::vendorSubTotal)
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
-        order.setEstimatedPayout(estimatedPayout(subtotal));
+        order.setEstimatedPayout(estimatedPayout(payout));
+
+        // The vendor must see ONLY vendor prices. Showing the customer price next to it (or the customer's
+        // total / coupon) would reveal the platform margin, so those are replaced for the vendor view.
+        // (This DTO instance is built fresh for this request, so changing it here affects nobody else.)
+        for (OrderItemResponseDto item : order.getItems()) {
+            BigDecimal unit = item.effectiveVendorUnitPrice();
+            BigDecimal sub = item.vendorSubTotal();
+            item.setPrice(unit);
+            item.setSubTotal(sub);
+        }
+        order.setTotalAmount(payout);
+        order.setPromoCode(null);
+        order.setPromoDiscount(BigDecimal.ZERO);
     }
 
     /**
@@ -335,8 +350,8 @@ public class VendorOrderManagementService {
                 .productId(item.getProductId())
                 .productName(item.getProductName())
                 .quantity(item.getQuantity())
-                .price(item.getPrice())
-                .subTotal(item.getSubTotal())
+                .price(item.effectiveVendorUnitPrice())
+                .subTotal(item.vendorSubTotal())
                 .build();
     }
 }

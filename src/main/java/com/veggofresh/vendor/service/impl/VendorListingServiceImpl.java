@@ -143,10 +143,12 @@ public class VendorListingServiceImpl implements VendorListingService {
                 .description(p.getDescription())
                 .categoryName(p.getCategoryName())
                 .subcategoryName(p.getSubcategoryName())
-                .price(p.getPrice())
-                .originalPrice(p.getOriginalPrice())
+                // The vendor sees what THEY are paid per unit, not the customer price (that would expose the
+                // platform margin), so the customer-facing strike-through price / discount are left out.
+                .price(p.getVendorPrice() != null ? p.getVendorPrice() : p.getPrice())
+                .originalPrice(null)
                 .unit(p.getUnit())
-                .discountPercent(p.getDiscountPercent())
+                .discountPercent(null)
                 .imageUrl(p.getImageUrl())
                 .imageUrls(p.getImageUrls())
                 .isListed(isListed)

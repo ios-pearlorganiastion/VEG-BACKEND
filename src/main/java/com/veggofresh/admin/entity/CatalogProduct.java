@@ -38,6 +38,13 @@ public class CatalogProduct extends BaseEntity {
     private BigDecimal price;
 
     /**
+     * What the VENDOR is paid per unit. Never shown to customers. price - vendorPrice is the platform's
+     * margin, which funds coupon discounts. Always > 0 and <= price (also enforced by a DB check, V167).
+     */
+    @Column(name = "vendor_price", nullable = false, precision = 10, scale = 2)
+    private BigDecimal vendorPrice;
+
+    /**
      * Optional "was" price for showing a strikethrough + discount badge on
      * browse screens. null = no discount, show price only. When set, must be
      * strictly greater than price (enforced in AdminProductServiceImpl, not
