@@ -1,0 +1,33 @@
+name: Veggofresh_backend
+
+
+on:
+  push:
+    branches: main
+  workflow_dispatch:
+
+
+env:
+  APP_NAME: vegfresh
+  DEPLOY_PATH: /opt/vegfresh/backend/VEG-BACKEND
+
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to server
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          port: ${{ secrets.SERVER_PORT || 22 }}
+          command_timeout: 10m
+          envs: DEPLOY_PATH
+          script: |
+            set -e
+            cd "$DEPLOY_PATH"
+            sudo su
+            chmod +x deploy.sh
+            ./deploy.sh
