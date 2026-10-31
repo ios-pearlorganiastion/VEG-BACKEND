@@ -1,6 +1,9 @@
 package com.veggofresh.payment.service;
 
 import com.veggofresh.admin.service.PlatformSettingsService;
+import com.veggofresh.customer.entity.Order;
+import com.veggofresh.customer.repository.OrderRepository;
+import com.veggofresh.vendor.service.ShopLookupService;
 import com.veggofresh.coupon.service.CouponCheckoutService;
 import com.veggofresh.notification.entity.NotificationRecipientRole;
 import com.veggofresh.notification.entity.NotificationType;
@@ -56,6 +59,8 @@ public class PaymentServiceImpl implements PaymentService {
     private final NotificationService notificationService;
     private final PlatformSettingsService platformSettingsService;
     private final CouponCheckoutService couponService;
+    private final OrderRepository orderRepository;
+    private final ShopLookupService shopLookupService;
 
     @Override
     @Transactional
@@ -195,6 +200,10 @@ public class PaymentServiceImpl implements PaymentService {
         log.info("Payment verified and authorized: paymentOrderId={} razorpayPaymentId={}", paymentOrder.getId(),
                 razorpayPaymentId);
 
+        if (!paymentOrder.isTopup()) {
+            notifyCandidateVendorsIfOrders(paymentOrder.getId());
+        }
+
         // If it's a top-up, we auto-capture immediately (no vendor acceptance needed)
         if (paymentOrder.isTopup()) {
             log.info("Auto-capturing top-up paymentOrderId={}", paymentOrder.getId());
@@ -269,7 +278,7 @@ public class PaymentServiceImpl implements PaymentService {
     public void onOrderCancelled(UUID orderId) {
         // Every cancellation path (customer cancel, vendor rejection, accept timeout, failed payment) ends here, so
         // this is the one place the coupon share of the order is given back. Idempotent; a no-op without a coupon.
-        couponService.onOrderCancelled(orderId);
+        if (couponService != null) { couponService.onOrderCancelled(orderId); }
 
         Optional<PaymentOrderLine> lineOpt = paymentOrderLineRepository.findByOrderId(orderId);
         if (lineOpt.isEmpty()) {
@@ -432,5 +441,28 @@ public class PaymentServiceImpl implements PaymentService {
                 "Payment failed", "Your payment could not be completed" + (reason != null ? " — try again" : ""),
                 "{\"paymentOrderId\":\"" + paymentOrderId + "\",\"reason\":\"" + (reason != null ? reason : "")
                         + "\"}");
+    }
+
+    private void notifyCandidateVendorsIfOrders(UUID paymentOrderId) {
+        List<PaymentOrderLine> lines = paymentOrderLineRepository.findByPaymentOrderId(paymentOrderId);
+        for (PaymentOrderLine line : lines) {
+            orderRepository.findById(line.getOrderId()).ifPresent(order -> {
+                if (order.getCandidateVendorIds() != null) {
+                    order.getCandidateVendorIds().forEach(shopId ->
+                            shopLookupService.findOwnerUserIdByShopId(shopId)
+                                    .ifPresent(ownerId -> notificationService.send(
+                                            ownerId,
+                                            NotificationRecipientRole.VENDOR,
+                                            NotificationType.NEW_ORDER_REQUEST,
+                                            "New order request",
+                                            "Order " + order.getOrderNumber() + " is awaiting your shop's decision",
+                                            orderData(order))));
+                }
+            });
+        }
+    }
+
+    private String orderData(Order order) {
+        return "{\"orderId\":\"" + order.getId() + "\",\"orderNumber\":\"" + order.getOrderNumber() + "\"}";
     }
 }

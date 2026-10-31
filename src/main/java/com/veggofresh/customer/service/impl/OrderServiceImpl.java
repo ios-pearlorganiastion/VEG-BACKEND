@@ -757,25 +757,15 @@ public class OrderServiceImpl implements OrderService {
     }
 
     /**
-     * Order placed: ping the customer (ORDER_PLACED) and every shop whose
-     * candidate list the order was broadcast to (NEW_ORDER_REQUEST — the vendor
-     * "new order inbox" ping).
+     * Order placed: ping the customer (ORDER_PLACED).
+     * The candidate vendor broadcast (NEW_ORDER_REQUEST) is deferred to verifyPayment()
+     * so that vendors are only notified after payment is verified and authorized.
      */
     private void notifyOrderPlaced(UUID customerUserId, Order saved) {
         notificationService.send(customerUserId, NotificationRecipientRole.CUSTOMER, NotificationType.ORDER_PLACED,
                 "Order placed successfully",
                 "Your order " + saved.getOrderNumber() + " has been placed — a nearby shop will confirm it shortly",
                 orderData(saved));
-
-        if (saved.getCandidateVendorIds() != null) {
-            saved.getCandidateVendorIds()
-                    .forEach(shopId -> shopLookupService.findOwnerUserIdByShopId(shopId)
-                            .ifPresent(ownerId -> notificationService.send(ownerId, NotificationRecipientRole.VENDOR,
-                                    NotificationType.NEW_ORDER_REQUEST,
-                                    "New order request",
-                                    "Order " + saved.getOrderNumber() + " is awaiting your shop's decision",
-                                    orderData(saved))));
-        }
     }
 
     private String orderData(Order order) {
