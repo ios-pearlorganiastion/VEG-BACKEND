@@ -71,10 +71,11 @@ public class DeliveryAssignmentServiceImpl implements DeliveryAssignmentService 
     // ceiling) -- see issuePickupOtp()/issueDropOtp(). Previously a hardcoded
     // OTP_EXPIRY_MINUTES = 15 constant here.
     private static final int MAX_OTP_ATTEMPTS = 5;
-    private static final BigDecimal BASE_PAY = BigDecimal.valueOf(20);
-    private static final BigDecimal RATE_PER_KM = BigDecimal.valueOf(8);
-    // peakBonus and tip are ALWAYS zero -- no surge/demand system and no
-    // tip-collection mechanism exist anywhere yet. See NOTES.md.
+    // A delivery partner's earning IS the order's delivery fee -- the admin-configured flat amount
+    // (PlatformSettings.deliveryFeeAmount) that was fixed on the order at checkout and that
+    // completeDelivery() credits to their wallet. There is no hardcoded base pay or per-km rate.
+    // See resolveDeliveryFee(), recordEarning() and completeDelivery(). peakBonus, tip and
+    // distanceFare are always zero (no surge, tip or distance-pay system exists).
     private static final List<DeliveryAssignmentStatus> TERMINAL_STATUSES = List.of(
             DeliveryAssignmentStatus.DELIVERED, DeliveryAssignmentStatus.REJECTED,
             DeliveryAssignmentStatus.EXPIRED, DeliveryAssignmentStatus.CANCELLED);
@@ -370,32 +371,39 @@ public class DeliveryAssignmentServiceImpl implements DeliveryAssignmentService 
 
         customerOrderService.updateOrderStatus(orderId, "DELIVERED");
 
-        recordEarning(assignment);
+        Order order = orderRepository.findById(orderId)
+                .orElseThrow(() -> new BusinessException("ORDER_NOT_FOUND", "Order not found", HttpStatus.NOT_FOUND));
 
-        try {
-            orderRepository.findById(orderId).ifPresent(order -> {
-                // Vendor is paid the admin-set vendor price (snapshotted on each item); the platform keeps
-                // platform fee + margin - coupon discount. Everything comes from what was saved on the order.
-                java.util.List<DeliverySettlementMath.Line> lines = order.getItems() == null
-                        ? java.util.List.of()
-                        : order.getItems().stream()
-                                .map(i -> new DeliverySettlementMath.Line(i.getPrice(), i.getVendorUnitPrice(), i.getQuantity()))
-                                .collect(java.util.stream.Collectors.toList());
-                BigDecimal platformFee = order.getEstimatedTax() != null ? order.getEstimatedTax()
-                        : platformSettingsService.getPlatformFeeAmount();
-                DeliverySettlementMath.Result money =
-                        DeliverySettlementMath.compute(lines, platformFee, order.getPromoDiscount());
-                BigDecimal deliveryFee = order.getDeliveryFee() != null ? order.getDeliveryFee()
-                        : platformSettingsService.getDeliveryFeeAmount(); // fallback to admin-configured fee
-                UUID vendorUserId = order.getAcceptedShopId() != null
-                        ? shopLookupService.findOwnerUserIdByShopId(order.getAcceptedShopId()).orElse(null)
-                        : null;
-                paymentService.onDeliveryCompleted(orderId, money.vendorAmount(), deliveryFee,
-                        money.platformAmount(), vendorUserId, deliveryPartnerUserId);
-            });
-        } catch (Exception e) {
-            log.error("Failed to execute payment settlement for delivered order {}: {}", orderId, e.getMessage(), e);
-        }
+        // One source of truth: the SAME two amounts -- the ones fixed on the order at checkout from
+        // the admin's settings -- feed both the earning record below and the wallet credits, so what
+        // the partner sees in Earnings always equals what lands in their wallet, and the platform
+        // wallet gets exactly the fee the customer was charged (not whatever the admin set since).
+        BigDecimal deliveryFee = resolveDeliveryFee(order.getDeliveryFee());
+        BigDecimal platformFee = order.getEstimatedTax() != null   // estimatedTax = the platform fee charged at checkout
+                ? order.getEstimatedTax()
+                : platformSettingsService.getPlatformFeeAmount();
+        // The vendor is paid the admin-set vendor price (snapshotted on each item); the platform keeps
+        // platform fee + margin - coupon discount. All of it comes from what was saved on the order.
+        java.util.List<DeliverySettlementMath.Line> lines = order.getItems() == null
+                ? java.util.List.of()
+                : order.getItems().stream()
+                        .map(i -> new DeliverySettlementMath.Line(i.getPrice(), i.getVendorUnitPrice(), i.getQuantity()))
+                        .collect(java.util.stream.Collectors.toList());
+        DeliverySettlementMath.Result money =
+                DeliverySettlementMath.compute(lines, platformFee, order.getPromoDiscount());
+        UUID vendorUserId = order.getAcceptedShopId() != null
+                ? shopLookupService.findOwnerUserIdByShopId(order.getAcceptedShopId()).orElse(null)
+                : null;
+
+        recordEarning(assignment, deliveryFee);
+
+        // Deliberately NOT wrapped in try/catch. Status, earning record and wallet credits all share
+        // this one transaction, so a failure here has to fail -- and cleanly roll back -- the whole
+        // completion with the real error. Catching it only hid the cause: the failed nested call had
+        // already marked the transaction rollback-only, so the request still blew up at commit with a
+        // vague "please try again". Zero-amount fees are handled inside onDeliveryCompleted.
+        paymentService.onDeliveryCompleted(orderId, money.vendorAmount(), deliveryFee, money.platformAmount(),
+                vendorUserId, deliveryPartnerUserId);
 
         return mapToFullDto(assignment);
     }
@@ -724,24 +732,21 @@ public class DeliveryAssignmentServiceImpl implements DeliveryAssignmentService 
         otpRepository.save(otp);
     }
 
-    private void recordEarning(DeliveryAssignment assignment) {
-        BigDecimal total = estimateEarning(assignment);
-
-        double distanceKm = haversineKm(assignment.getPickupLatitude(), assignment.getPickupLongitude(),
-                assignment.getDropLatitude(), assignment.getDropLongitude());
-        BigDecimal distanceFare = RATE_PER_KM.multiply(BigDecimal.valueOf(distanceKm))
-                .setScale(2, java.math.RoundingMode.HALF_UP);
-        BigDecimal peakBonus = BigDecimal.ZERO; // no surge/demand system exists yet
-        BigDecimal tip = BigDecimal.ZERO; // no tip-collection mechanism exists yet
-
+    /**
+     * Records the partner's earning for a completed delivery. {@code deliveryFee} is the exact amount
+     * that is credited to their wallet in the same transaction, so the Earnings screens and the wallet
+     * can never disagree. The breakdown fields are kept (the API response shape is unchanged) but only
+     * basePay carries a value: there is no distance pay, peak bonus or tip system.
+     */
+    private void recordEarning(DeliveryAssignment assignment, BigDecimal deliveryFee) {
         EarningRecord record = new EarningRecord();
         record.setDeliveryPartnerUserId(assignment.getDeliveryPartnerUserId());
         record.setOrderId(assignment.getOrderId());
-        record.setBasePay(BASE_PAY);
-        record.setDistanceFare(distanceFare);
-        record.setPeakBonus(peakBonus);
-        record.setTip(tip);
-        record.setAmount(total);
+        record.setBasePay(deliveryFee);
+        record.setDistanceFare(BigDecimal.ZERO);
+        record.setPeakBonus(BigDecimal.ZERO);
+        record.setTip(BigDecimal.ZERO);
+        record.setAmount(deliveryFee);
         earningRecordRepository.save(record);
     }
 
@@ -761,8 +766,11 @@ public class DeliveryAssignmentServiceImpl implements DeliveryAssignmentService 
         // a nice-to-have preview, not something that should ever break the
         // nearby-requests list if order lookup fails for any reason.
         List<String> itemThumbnails = null;
+        BigDecimal orderDeliveryFee = null;
         try {
-            itemThumbnails = customerOrderService.getOrderByIdForFulfillment(a.getOrderId()).getItemThumbnails();
+            var order = customerOrderService.getOrderByIdForFulfillment(a.getOrderId());
+            itemThumbnails = order.getItemThumbnails();
+            orderDeliveryFee = order.getDeliveryFee();
         } catch (BusinessException e) {
             log.warn("Could not resolve item thumbnails for assignment {} (orderId={}): {}",
                     a.getId(), a.getOrderId(), e.getMessage());
@@ -781,24 +789,20 @@ public class DeliveryAssignmentServiceImpl implements DeliveryAssignmentService 
                 .expiresAt(a.getExpiresAt())
                 .shopName(a.getShopName())
                 .shopAddress(a.getShopAddress())
-                .estimatedEarning(estimateEarning(a))
+                .estimatedEarning(resolveDeliveryFee(orderDeliveryFee))
                 .itemThumbnails(itemThumbnails)
                 .build();
     }
 
     /**
-     * Real settlement formula (recordEarning() below) computed early as a
-     * preview, using the same pickup/drop coordinates -- both already known
-     * the moment the assignment is created (dispatch time), well before any
-     * partner has accepted. peakBonus and tip are always zero right now, so
-     * this preview matches the eventual recorded EarningRecord.amount exactly.
+     * The delivery partner's earning for an order: the delivery fee that was fixed on the order at
+     * checkout from the admin's setting (PlatformSettings.deliveryFeeAmount). This is exactly what
+     * completeDelivery() credits to their wallet and records as their earning, so the estimate shown
+     * before accepting always matches the eventual payout. The admin's CURRENT fee is only a fallback
+     * for orders that have no fee stored on them.
      */
-    private BigDecimal estimateEarning(DeliveryAssignment a) {
-        double distanceKm = haversineKm(a.getPickupLatitude(), a.getPickupLongitude(),
-                a.getDropLatitude(), a.getDropLongitude());
-        BigDecimal distanceFare = RATE_PER_KM.multiply(BigDecimal.valueOf(distanceKm))
-                .setScale(2, java.math.RoundingMode.HALF_UP);
-        return BASE_PAY.add(distanceFare);
+    private BigDecimal resolveDeliveryFee(BigDecimal orderDeliveryFee) {
+        return orderDeliveryFee != null ? orderDeliveryFee : platformSettingsService.getDeliveryFeeAmount();
     }
 
     private ProofOfDeliveryResponseDto mapProofToDto(DeliveryProofOfDelivery proof) {
@@ -849,11 +853,13 @@ public class DeliveryAssignmentServiceImpl implements DeliveryAssignmentService 
         String customerName = null;
         List<DeliveryAssignmentResponseDto.OrderItemSummaryDto> items = null;
         BigDecimal orderTotal = null;
+        BigDecimal orderDeliveryFee = null;
         List<String> itemThumbnails = null;
         try {
             var order = customerOrderService.getOrderByIdForFulfillment(a.getOrderId());
             customerName = order.getCustomerName();
             orderTotal = order.getTotalAmount();
+            orderDeliveryFee = order.getDeliveryFee();
             itemThumbnails = order.getItemThumbnails();
             items = order.getItems().stream()
                     .map(item -> DeliveryAssignmentResponseDto.OrderItemSummaryDto.builder()
@@ -885,7 +891,7 @@ public class DeliveryAssignmentServiceImpl implements DeliveryAssignmentService 
                 .shopPhone(shopPhone)
                 .customerName(customerName)
                 .customerPhone(customerPhone)
-                .estimatedEarning(estimateEarning(a))
+                .estimatedEarning(resolveDeliveryFee(orderDeliveryFee))
                 .items(items)
                 .orderTotal(orderTotal)
                 .itemThumbnails(itemThumbnails)

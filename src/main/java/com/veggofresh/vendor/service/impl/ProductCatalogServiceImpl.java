@@ -6,6 +6,7 @@ import com.veggofresh.admin.dto.response.SubcategoryResponseDto;
 import com.veggofresh.admin.service.AdminProductService;
 import com.veggofresh.admin.service.CatalogCategoryService;
 import com.veggofresh.admin.service.CatalogSubcategoryService;
+import com.veggofresh.admin.service.PlatformSettingsService;
 import com.veggofresh.platform.exception.BusinessException;
 import com.veggofresh.vendor.dto.CategoryDto;
 import com.veggofresh.vendor.dto.CategoryTreeDto;
@@ -52,18 +53,15 @@ import java.util.stream.Collectors;
  * real DB-level join (or a materialized/denormalized eligibility view) once
  * catalog size actually warrants it. See NOTES_VENDOR.md.
  *
- * ⚠️ RADIUS PLACEHOLDER: Admin has no real configurable delivery-radius
- * setting yet. DEFAULT_RADIUS_KM below is a stand-in — same pattern as
- * VendorTestController standing in for Admin's missing KYC endpoints. Swap
- * resolveRadiusKm() for a real Admin settings lookup once that exists.
+ * RADIUS: the customer-facing shop radius is the admin-configured
+ * PlatformSettings.deliveryRadiusKm (see resolveRadiusKm()) -- the same setting that
+ * limits delivery partners -- so changing it in the admin panel changes which shops
+ * and products customers see, and which vendors an order is sent to.
  */
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class ProductCatalogServiceImpl implements ProductCatalogService {
-
-    /** TODO: replace with a real Admin-configurable setting once it exists. */
-    private static final double DEFAULT_RADIUS_KM = 10.0;
 
     /** Overfetch size for the Java-side filter+paginate workaround described above. */
     private static final int OVERFETCH_SIZE = 2000;
@@ -73,6 +71,7 @@ public class ProductCatalogServiceImpl implements ProductCatalogService {
     private final CatalogSubcategoryService catalogSubcategoryService;
     private final VendorListingRepository vendorListingRepository;
     private final ShopRepository shopRepository;
+    private final PlatformSettingsService platformSettingsService;
 
     @Override
     @Transactional(readOnly = true)
@@ -299,8 +298,9 @@ public class ProductCatalogServiceImpl implements ProductCatalogService {
                 .build();
     }
 
+    /** The admin-configured delivery radius (PlatformSettings.deliveryRadiusKm, cached in memory by the settings service). */
     private double resolveRadiusKm() {
-        return DEFAULT_RADIUS_KM;
+        return platformSettingsService.getDeliveryRadiusKm();
     }
 
     private boolean isShopEligible(Shop shop, double latitude, double longitude, double radiusKm) {

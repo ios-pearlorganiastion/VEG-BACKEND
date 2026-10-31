@@ -21,7 +21,6 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
-import java.math.RoundingMode;
 import java.util.List;
 import java.util.UUID;
 import java.util.stream.Collectors;
@@ -42,10 +41,6 @@ import java.util.stream.Collectors;
 @Service
 @RequiredArgsConstructor
 public class VendorOrderManagementService {
-
-    // Flat placeholder rate -- no real fee engine exists anywhere in the codebase.
-    // Whoever builds real fee logic later should replace this constant.
-    private static final BigDecimal SERVICE_FEE_PERCENT = BigDecimal.valueOf(10);
 
     private final CustomerOrderService customerOrderService;
     private final ShopRepository shopRepository;
@@ -141,10 +136,6 @@ public class VendorOrderManagementService {
                 .map(VendorOrderItemDto::getSubTotal)
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
 
-        // subtotal is now the vendor's own payout (vendor price x quantity), so there is no extra "service fee"
-        // to add on top any more: the vendor receives exactly the subtotal.
-        BigDecimal serviceFee = BigDecimal.ZERO;
-
         VendorOrderDetailResponseDto.VendorOrderDetailResponseDtoBuilder builder = VendorOrderDetailResponseDto
                 .builder()
                 .orderId(order.getId())
@@ -154,9 +145,6 @@ public class VendorOrderManagementService {
                 .latitude(order.getLatitude())
                 .longitude(order.getLongitude())
                 .subtotal(subtotal)
-                .serviceFeePercent(BigDecimal.ZERO)
-                .serviceFee(serviceFee)
-                .totalForThisShop(subtotal.add(serviceFee))
                 .estimatedPayout(estimatedPayout(subtotal))
                 .createdAt(order.getCreatedAt())
                 .updatedAt(order.getUpdatedAt());
@@ -190,14 +178,15 @@ public class VendorOrderManagementService {
     /**
      * Real settlement formula (matches PaymentServiceImpl.onDeliveryCompleted)
      * computed early as a preview.
-     * Vendor receives full product subtotal (the customer pays the ₹5 platform fee and ₹20 delivery fee separately).
+     * Vendor receives full product subtotal (the customer pays the admin-configured platform fee and
+     * delivery fee separately; nothing is deducted from the vendor).
      */
     private BigDecimal estimatedPayout(BigDecimal productSubtotal) {
         return productSubtotal != null ? productSubtotal : BigDecimal.ZERO;
     }
 
     /**
-     * Applies estimatedPayout (product subtotal minus platform commission) onto a
+     * Applies estimatedPayout (the shop's full product subtotal) onto a
      * shared OrderResponseDto in place.
      */
     private void applyEstimatedPayout(OrderResponseDto order) {

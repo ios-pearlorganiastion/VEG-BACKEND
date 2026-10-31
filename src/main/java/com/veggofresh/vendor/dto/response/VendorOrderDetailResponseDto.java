@@ -9,7 +9,7 @@ import java.util.List;
 import java.util.UUID;
 
 /**
- * Figma "Order Details" screen. IMPORTANT: subtotal/serviceFee/total here are scoped to
+ * Figma "Order Details" screen. IMPORTANT: subtotal and estimatedPayout here are scoped to
  * THIS SHOP's items only, not the full order -- a single Customer order could span
  * multiple vendors' products (nothing scopes a cart to one shop), so 'items' is
  * filtered down before these totals are computed.
@@ -36,16 +36,12 @@ public class VendorOrderDetailResponseDto {
     /** Sum of this shop's items only. */
     private BigDecimal subtotal;
 
-    /** Flat placeholder rate -- no real fee engine exists anywhere. See NOTES_VENDOR.md. */
-    private BigDecimal serviceFeePercent;
-    private BigDecimal serviceFee;
-    private BigDecimal totalForThisShop;
-
     /**
-     * What this shop will actually be paid: subtotal minus the admin-configured
-     * platform commission (matches the real settlement formula in
-     * PaymentServiceImpl.onDeliveryCompleted -- this is a preview of that same
-     * number, not a separate concept). Visible at request time (before accept)
+     * What this shop will actually be paid: the full product subtotal -- nothing is
+     * deducted from the vendor (the platform fee and delivery fee are charged to the
+     * customer separately). Matches what PaymentServiceImpl.onDeliveryCompleted
+     * credits to the vendor wallet -- this is a preview of that same
+     * number, not a separate concept. Visible at request time (before accept)
      * as well as after, since it's this vendor's own money and doesn't involve
      * anyone else's identity.
      */

@@ -57,9 +57,10 @@ public class DeliveryAssignmentResponseDto {
     private List<String> itemThumbnails;
 
     /**
-     * Base pay + distance fare, computed with the exact same formula used at
-     * real settlement time (recordEarning()) -- peak bonus and tip are always
-     * zero right now, so this preview matches the eventual real payout.
+     * What the partner will earn for this delivery: the order's delivery fee -- the
+     * admin-configured flat amount (PlatformSettings.deliveryFeeAmount) fixed on the order
+     * at checkout. It is exactly what completeDelivery() credits to their wallet and
+     * records as their earning, so this preview always matches the eventual payout.
      * Populated on both the pre-accept (light) and post-accept (full) views,
      * since it's the partner's own potential earning and doesn't depend on
      * anyone else's identity.

@@ -76,18 +76,25 @@ public interface PaymentService {
     void onOrderCancelled(UUID orderId);
 
     /**
-     * Called when a delivery is completed successfully. Credits the vendor, the delivery partner and the
-     * platform wallet with the amounts worked out for this order (see DeliverySettlementMath).
+     * Called when a delivery is completed successfully. Credits the vendor, delivery
+     * partner and platform wallets.
+     *
+     * <p>Every amount passed in is the one that was fixed on the order at checkout (from
+     * the admin's flat fee settings), so the credits always equal what the customer was
+     * actually charged -- even if the admin changed a fee while the order was in progress.
+     *
+     * <p>A zero amount (for example the admin set a fee to 0) means "nothing to credit"
+     * and is skipped; it does not fail the settlement.
      *
      * @param orderId               the delivered Customer Order id
-     * @param vendorAmount          what the vendor is paid (admin-set vendor price x quantity)
-     * @param deliveryFee           the delivery fee (goes to delivery partner)
+     * @param vendorAmount          what the vendor is paid (admin-set vendor price x quantity), see DeliverySettlementMath
+     * @param deliveryFee           the delivery fee charged on this order (goes to the delivery partner)
      * @param platformAmount        what the platform keeps: platform fee + margin - coupon discount (never negative)
      * @param vendorUserId          the shop owner's user id
      * @param deliveryPartnerUserId the delivery partner's user id
      */
-    void onDeliveryCompleted(UUID orderId, BigDecimal vendorAmount, BigDecimal deliveryFee,
-                             BigDecimal platformAmount, UUID vendorUserId, UUID deliveryPartnerUserId);
+    void onDeliveryCompleted(UUID orderId, BigDecimal vendorAmount, BigDecimal deliveryFee, BigDecimal platformAmount,
+                             UUID vendorUserId, UUID deliveryPartnerUserId);
 
     /**
      * Called when a customer wants to manually add funds to their wallet.

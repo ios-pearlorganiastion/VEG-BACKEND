@@ -308,32 +308,48 @@ public class PaymentServiceImpl implements PaymentService {
     @Transactional
     public void onDeliveryCompleted(UUID orderId, BigDecimal vendorAmount, BigDecimal deliveryFee,
             BigDecimal platformAmount, UUID vendorUserId, UUID deliveryPartnerUserId) {
-        // The amounts are worked out by the caller from what was saved on the ORDER (vendor price snapshot,
-        // platform fee, coupon discount), so a later change of platform settings cannot alter an old order.
-        // A credit is only made for a positive amount: a zero/negative credit would be rejected by the wallet
-        // and would roll back the whole delivery completion.
-        if (vendorUserId != null && vendorAmount != null && vendorAmount.signum() > 0) {
-            walletService.credit(vendorUserId, vendorAmount,
+        // The caller works every amount out from what was saved on the ORDER at checkout (vendor price snapshot,
+        // platform fee, coupon discount; see DeliverySettlementMath), so a later change of the admin's settings
+        // cannot alter an old order: vendor = vendor price x qty, rider = delivery fee, platform = fee + margin
+        // - coupon (never negative). A zero amount means "nothing to credit" and is skipped, never an error.
+
+        if (vendorUserId == null) {
+            // Not expected: an order is only dispatched for delivery after a vendor has accepted it.
+            // If it ever happens (e.g. the shop was removed mid-order), make it loud instead of silent.
+            log.error("Settlement: no vendor user resolved for orderId={} -- the vendor share ({}) was NOT credited",
+                    orderId, vendorAmount);
+        } else {
+            creditIfPositive(vendorUserId, vendorAmount,
                     WalletTransactionReason.ORDER_VENDOR_SETTLEMENT,
                     orderId, "Revenue from completed order");
         }
 
-        if (deliveryPartnerUserId != null && deliveryFee != null && deliveryFee.signum() > 0) {
-            walletService.credit(deliveryPartnerUserId, deliveryFee,
+        if (deliveryPartnerUserId != null) {
+            creditIfPositive(deliveryPartnerUserId, deliveryFee,
                     WalletTransactionReason.ORDER_DELIVERY_SETTLEMENT,
                     orderId, "Delivery earnings for completed order (₹" + deliveryFee + ")");
         }
 
-        if (platformAmount != null && platformAmount.signum() > 0) {
-            walletService.credit(WalletService.PLATFORM_WALLET_USER_ID, platformAmount,
-                    WalletTransactionReason.ORDER_PLATFORM_COMMISSION,
-                    orderId, "Platform earning (₹" + platformAmount + ": fee + margin - coupon) on completed order");
-        } else {
-            log.info("Platform earning is zero for orderId={} (coupon used the whole margin and fee)", orderId);
-        }
+        creditIfPositive(WalletService.PLATFORM_WALLET_USER_ID, platformAmount,
+                WalletTransactionReason.ORDER_PLATFORM_COMMISSION,
+                orderId, "Platform earning (₹" + platformAmount + ": fee + margin - coupon) on completed order");
 
         log.info("Settlement complete: orderId={} vendorShare={} deliveryFee={} platformShare={}",
                 orderId, vendorAmount, deliveryFee, platformAmount);
+    }
+
+    /**
+     * WalletService.credit rejects non-positive amounts, so crediting a zero amount (e.g. the admin
+     * set the delivery fee or platform fee to 0) would fail -- and roll back -- the whole delivery
+     * completion. A zero or missing amount simply means "nothing to credit".
+     */
+    private void creditIfPositive(UUID userId, BigDecimal amount, WalletTransactionReason reason,
+            UUID orderId, String description) {
+        if (amount == null || amount.signum() <= 0) {
+            log.info("Settlement: skipping zero-amount {} credit for orderId={}", reason, orderId);
+            return;
+        }
+        walletService.credit(userId, amount, reason, orderId, description);
     }
 
     // ─────────────────────────────────────────────────────────────────────
