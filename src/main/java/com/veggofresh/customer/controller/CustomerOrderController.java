@@ -77,9 +77,11 @@ public class CustomerOrderController {
     public ResponseEntity<ApiResponse<CheckoutResultDto>> checkout(
             @Valid @RequestBody OrderRequestDto request) {
         CheckoutResultDto result = orderService.checkout(SecurityUtils.getCurrentUserId(), request);
+        // PAYMENT FIRST: nothing is ordered yet. The orders are created when the payment is authorized
+        // (see POST /verify-payment), so this must not say "placed".
         String message = result.getIssues().isEmpty()
-                ? "Order placed successfully"
-                : "Order placed for available items — some carts need your attention";
+                ? "Checkout ready — complete the payment to place your order"
+                : "Checkout ready for available items — some carts need your attention";
         return ResponseEntity.ok(ApiResponse.success(result, message));
     }
 
