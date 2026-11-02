@@ -44,7 +44,10 @@ import com.veggofresh.notification.entity.NotificationRecipientRole;
 import com.veggofresh.notification.entity.NotificationType;
 import com.veggofresh.notification.service.NotificationService;
 import com.veggofresh.payment.dto.PaymentHoldResponseDto;
+import com.veggofresh.payment.dto.PaymentOrderLineAllocationDto;
+import com.veggofresh.payment.service.PaymentAuthorizedHandler;
 import com.veggofresh.payment.service.PaymentService;
+import com.veggofresh.payment.service.PlacementOutcome;
 import com.veggofresh.payment.service.WalletService;
 import com.veggofresh.payment.service.WalletTransactionReason;
 import com.veggofresh.platform.exception.BusinessException;
@@ -54,6 +57,8 @@ import com.veggofresh.vendor.service.ShopLookupService;
 import com.veggofresh.admin.service.AdminProductService;
 import com.veggofresh.admin.service.PlatformSettingsService;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Page;
@@ -93,7 +98,7 @@ import java.util.stream.Collectors;
 @Service
 @RequiredArgsConstructor
 @Transactional
-public class OrderServiceImpl implements OrderService {
+public class OrderServiceImpl implements OrderService, PaymentAuthorizedHandler {
 
     /** Human-facing prefix, so an order number is recognisable in support chats. */
     private static final String ORDER_NUMBER_PREFIX = "#DM-";
@@ -136,7 +141,22 @@ public class OrderServiceImpl implements OrderService {
     private final PlatformSettingsService platformSettingsService;
     private final CartVendorResolver cartVendorResolver;
     private final CouponCheckoutService couponService;
+    /** Writes and reads the {@link CheckoutSnapshot} stored next to the payment. */
+    private final ObjectMapper objectMapper;
 
+    /**
+     * PAYMENT FIRST. Checkout validates and prices the carts exactly as before, but it no longer creates any
+     * order, clears any cart or notifies any vendor. It creates the payment (one Razorpay order for the
+     * whole checkout) and stores a {@link CheckoutSnapshot} next to it, then returns the details the app
+     * needs to open Razorpay.
+     *
+     * <p>The orders are created later, in {@link #placeOrders}, when the payment is authorized. If the
+     * customer closes the Razorpay popup or its timer runs out, nothing was created: the carts are still
+     * there and they simply check out again.
+     *
+     * <p>The coupon is only valued here ({@code quote}, read-only). It is actually taken in
+     * {@link #placeOrders}, so a checkout that is never paid never uses up a coupon.
+     */
     @Override
     public CheckoutResultDto checkout(UUID userId, OrderRequestDto request) {
         Address address = addressRepository.findByIdAndUserId(request.getAddressId(), userId)
@@ -155,11 +175,10 @@ public class OrderServiceImpl implements OrderService {
                             "Selected delivery slot is invalid", HttpStatus.BAD_REQUEST));
         }
 
-        List<OrderResponseDto> createdOrders = new ArrayList<>();
         List<CheckoutIssueDto> issues = new ArrayList<>();
-        List<Order> placedOrders = new ArrayList<>();
         List<Order> toPlace = new ArrayList<>();
         List<UUID> toPlaceCartIds = new ArrayList<>();
+        List<String> toPlaceLabels = new ArrayList<>();
 
         // ── Selective checkout ──
         // cartIds null/empty -> every open cart (backward compatible).
@@ -217,6 +236,7 @@ public class OrderServiceImpl implements OrderService {
             toPlace.add(buildOrderFromCart(userId, cart, address, slot, request, vendors.effectiveVendorIds(cart),
                     shippable));
             toPlaceCartIds.add(cart.getId());
+            toPlaceLabels.add(cartLabel);
         }
 
         if (toPlace.isEmpty()) {
@@ -225,63 +245,209 @@ public class OrderServiceImpl implements OrderService {
         }
 
         // ── One coupon for the whole checkout (single cart, several carts or all carts) ──
-        // Re-validated from scratch under a lock on the coupon, and the use is recorded in this same transaction.
-        // A dead coupon stops the checkout here with a clear message (nothing has been charged); a coupon that
-        // simply does not fit these carts (minimum order, no margin) gives no discount and is kept by the customer.
+        // Valued here without being taken (read-only quote): the use is recorded when the orders are created, so a
+        // checkout that is never paid never costs the customer a coupon. A dead coupon still stops the checkout
+        // here with a clear message (nothing has been charged); a coupon that simply does not fit these carts
+        // (minimum order, no margin) gives no discount and is kept by the customer.
         List<CouponMath.Basis> bases = new ArrayList<>(toPlace.size());
         for (Order order : toPlace) {
             bases.add(couponBasis(order));
         }
-        CouponReservation coupon = couponService.reserve(userId, request.getCouponCode(), bases);
-        for (Order order : toPlace) {
-            BigDecimal share = coupon.shareOf(order.getSourceCartId());
+        CouponQuote quote = couponService.quote(userId, request.getCouponCode(), bases);
+        if (quote.status() == CouponQuote.Status.INVALID) {
+            throw new BusinessException(quote.errorCode(), quote.message(), HttpStatus.BAD_REQUEST);
+        }
+
+        // What each cart will cost, exactly as the customer is about to be charged. These are the amounts the
+        // orders must come out at again when they are created after payment.
+        Map<UUID, BigDecimal> amountByCartId = new LinkedHashMap<>();
+        List<PaymentOrderLineAllocationDto> allocations = new ArrayList<>();
+        for (int i = 0; i < toPlace.size(); i++) {
+            Order order = toPlace.get(i);
+            BigDecimal share = quote.shareOf(order.getSourceCartId());
             if (share.signum() > 0) {
-                applyPromo(order, coupon.code(), share);
+                applyPromo(order, quote.code(), share);
+            }
+            amountByCartId.put(toPlaceCartIds.get(i), order.getTotalAmount());
+            allocations.add(PaymentOrderLineAllocationDto.builder()
+                    .orderNumber(toPlaceLabels.get(i))
+                    .amount(order.getTotalAmount())
+                    .build());
+        }
+
+        // The coupon that was valued is the coupon that gets taken: pin it, so a change to the customer's held
+        // coupon while they are paying cannot silently change the price.
+        String pinnedCoupon = quote.status() == CouponQuote.Status.APPLIED ? quote.code() : request.getCouponCode();
+        CheckoutSnapshot snapshot = new CheckoutSnapshot(address.getId(), new ArrayList<>(toPlaceCartIds),
+                request.getDeliverySlotId(), request.getScheduledDate(), request.getPaymentMethodId(),
+                pinnedCoupon, amountByCartId);
+
+        // PAYMENT INTEGRATION: a single Razorpay order covering every cart in this call. The frontend uses
+        // razorpayOrderId + razorpayKeyId to open Razorpay Checkout.js. Nothing else is created yet.
+        PaymentHoldResponseDto paymentHold = paymentService.createCheckoutHold(userId, allocations,
+                writeSnapshot(snapshot));
+
+        log.info("Checkout prepared: {} cart(s) to pay for (from {} requested), razorpay order={}, total={}, {} cart(s) skipped. "
+                        + "No order created until the payment is authorized.",
+                toPlace.size(),
+                requestedCartIds != null ? requestedCartIds.size() : "all",
+                paymentHold.getRazorpayOrderId(), paymentHold.getTotalAmount(), issues.size());
+
+        return CheckoutResultDto.builder()
+                .orders(new ArrayList<>())
+                .issues(issues)
+                .paymentHold(paymentHold)
+                .promoMessage(quote.message())
+                .build();
+    }
+
+    /**
+     * Called by the payment module, in its transaction, when a checkout's payment has been AUTHORIZED. Creates
+     * the orders from the snapshot written at checkout: orders saved as PLACED, carts cleared, coupon taken,
+     * customer and vendors notified. The vendor-accept clock therefore starts now, at payment time.
+     *
+     * <p>Before anything is created the checkout is re-built from the live carts and must come out at exactly
+     * the amounts the customer was shown and paid. If it does not (cart edited or already ordered on another
+     * device, an item gone, a coupon that died, an address removed) NOTHING is created and the reason is
+     * returned; the payment is then never captured. Rejections are returned, not thrown, because a throw would
+     * roll back the payment's own state change as well.
+     */
+    @Override
+    public PlacementOutcome placeOrders(UUID paymentOrderId, UUID userId, String checkoutSnapshot,
+            BigDecimal authorizedTotal) {
+        CheckoutSnapshot snapshot;
+        try {
+            snapshot = objectMapper.readValue(checkoutSnapshot, CheckoutSnapshot.class);
+        } catch (Exception e) {
+            log.error("Payment {}: checkout snapshot could not be read: {}", paymentOrderId, e.getMessage(), e);
+            return PlacementOutcome.rejected("we could not read the details of this checkout");
+        }
+        if (snapshot.cartIds() == null || snapshot.cartIds().isEmpty() || snapshot.addressId() == null) {
+            return PlacementOutcome.rejected("this checkout had nothing to order");
+        }
+
+        Address address = addressRepository.findByIdAndUserId(snapshot.addressId(), userId).orElse(null);
+        if (address == null) {
+            return PlacementOutcome.rejected("the delivery address is no longer available");
+        }
+        DeliverySlot slot = null;
+        if (snapshot.deliverySlotId() != null) {
+            slot = deliverySlotRepository.findById(snapshot.deliverySlotId()).orElse(null);
+            if (slot == null) {
+                return PlacementOutcome.rejected("the delivery slot is no longer available");
+            }
+        }
+
+        OrderRequestDto request = new OrderRequestDto();
+        request.setAddressId(snapshot.addressId());
+        request.setDeliverySlotId(snapshot.deliverySlotId());
+        request.setScheduledDate(snapshot.scheduledDate());
+        request.setPaymentMethodId(snapshot.paymentMethodId());
+        request.setCouponCode(snapshot.couponCode());
+
+        Map<UUID, Cart> openCartsById = new LinkedHashMap<>();
+        for (Cart cart : shoppableCarts(userId, newVendorSession(address))) {
+            openCartsById.put(cart.getId(), cart);
+        }
+
+        List<Order> toPlace = new ArrayList<>();
+        for (UUID cartId : snapshot.cartIds()) {
+            Cart cart = openCartsById.get(cartId);
+            if (cart == null) {
+                // Gone: emptied, edited away, or already ordered by another payment for the same carts.
+                return PlacementOutcome.rejected("your cart changed or was already ordered while you were paying");
+            }
+            CartVendorResolver.Session vendors = newVendorSession(address);
+            if (!vendors.revalidate(cart)) {
+                return PlacementOutcome.rejected("some items in your cart are no longer available together");
+            }
+            List<CartItem> shippable = vendors.onlyShippableItems(cart);
+            if (shippable.isEmpty()) {
+                return PlacementOutcome.rejected("none of the items in one of your carts are available any more");
+            }
+            try {
+                toPlace.add(buildOrderFromCart(userId, cart, address, slot, request, vendors.effectiveVendorIds(cart),
+                        shippable));
+            } catch (BusinessException e) {
+                return PlacementOutcome.rejected(e.getMessage());
+            }
+        }
+
+        // The coupon: valued read-only first, so a dead coupon is a clean rejection rather than an exception.
+        List<CouponMath.Basis> bases = new ArrayList<>(toPlace.size());
+        for (Order order : toPlace) {
+            bases.add(couponBasis(order));
+        }
+        CouponQuote quote = couponService.quote(userId, snapshot.couponCode(), bases);
+        if (quote.status() == CouponQuote.Status.INVALID) {
+            return PlacementOutcome.rejected("your coupon is no longer valid");
+        }
+        for (Order order : toPlace) {
+            BigDecimal share = quote.shareOf(order.getSourceCartId());
+            if (share.signum() > 0) {
+                applyPromo(order, quote.code(), share);
+            }
+        }
+
+        // The customer paid exactly what they were shown. Anything else means the carts moved under them.
+        BigDecimal total = BigDecimal.ZERO;
+        for (Order order : toPlace) {
+            BigDecimal expected = snapshot.cartAmounts() == null ? null
+                    : snapshot.cartAmounts().get(order.getSourceCartId());
+            if (expected == null || expected.compareTo(order.getTotalAmount()) != 0) {
+                log.warn("Payment {}: cart {} now prices at {} but {} was charged", paymentOrderId,
+                        order.getSourceCartId(), order.getTotalAmount(), expected);
+                return PlacementOutcome.rejected("the prices in your cart changed while you were paying");
+            }
+            total = total.add(order.getTotalAmount());
+        }
+        if (authorizedTotal == null || total.compareTo(authorizedTotal) != 0) {
+            log.warn("Payment {}: orders total {} but {} was authorized", paymentOrderId, total, authorizedTotal);
+            return PlacementOutcome.rejected("the amount paid does not match your order total");
+        }
+
+        // Everything checks out: take the coupon for real, then create the orders.
+        CouponReservation coupon = couponService.reserve(userId, snapshot.couponCode(), bases);
+        for (Order order : toPlace) {
+            if (coupon.shareOf(order.getSourceCartId()).compareTo(quote.shareOf(order.getSourceCartId())) != 0) {
+                // Valued one way a moment ago, taken another way now. Roll everything back (the payment stays
+                // CREATED and is retried) rather than create orders at a different price than was charged.
+                throw new IllegalStateException("Coupon changed while placing the orders for payment "
+                        + paymentOrderId);
             }
         }
 
         Map<UUID, BigDecimal> shareByOrderId = new LinkedHashMap<>();
-        for (int i = 0; i < toPlace.size(); i++) {
-            Order saved = orderRepository.save(toPlace.get(i));
-            createdOrders.add(orderResponseMapper.mapToDto(saved));
-            placedOrders.add(saved);
+        List<Order> placed = new ArrayList<>();
+        for (Order order : toPlace) {
+            Order saved = orderRepository.save(order);
+            placed.add(saved);
             BigDecimal share = coupon.shareOf(saved.getSourceCartId());
             if (share.signum() > 0) {
                 shareByOrderId.put(saved.getId(), share);
             }
-
-            cartService.clearCart(userId, toPlaceCartIds.get(i));
+            cartService.clearCart(userId, saved.getSourceCartId());
         }
         if (coupon.hasDiscount()) {
             couponService.linkOrders(coupon.redemptionId(), shareByOrderId);
         }
 
-        // PAYMENT INTEGRATION: create a single Razorpay order (hold) covering all
-        // successfully checked-out orders in this call. The frontend uses
-        // razorpayOrderId + razorpayKeyId to open Razorpay Checkout.js.
-        List<UUID> orderIds = createdOrders.stream()
-                .map(OrderResponseDto::getId)
-                .collect(Collectors.toList());
-        List<java.math.BigDecimal> orderAmounts = createdOrders.stream()
-                .map(OrderResponseDto::getTotalAmount)
-                .collect(Collectors.toList());
-        PaymentHoldResponseDto paymentHold = paymentService.createHold(userId, orderIds, orderAmounts);
+        // Only now, with the payment authorized and the orders saved, do the customer and the vendors hear about it.
+        placed.forEach(order -> notifyOrderPlaced(userId, order));
 
-        // Order-placed notifications fire only AFTER the payment hold succeeded
-        // so they never outlive a rolled-back checkout.
-        placedOrders.forEach(order -> notifyOrderPlaced(userId, order));
+        log.info("Payment {} authorized: {} order(s) placed, total={}", paymentOrderId, placed.size(), total);
 
-        log.info("Checkout complete: {} order(s) created (from {} cart(s) requested), razorpay order={}, total={}, {} cart(s) skipped",
-                createdOrders.size(),
-                requestedCartIds != null ? requestedCartIds.size() : "all",
-                paymentHold.getRazorpayOrderId(), paymentHold.getTotalAmount(), issues.size());
+        return PlacementOutcome.placed(placed.stream()
+                .map(o -> new PlacementOutcome.PlacedOrder(o.getId(), o.getTotalAmount()))
+                .collect(Collectors.toList()));
+    }
 
-        return CheckoutResultDto.builder()
-                .orders(createdOrders)
-                .issues(issues)
-                .paymentHold(paymentHold)
-                .promoMessage(coupon.message())
-                .build();
+    private String writeSnapshot(CheckoutSnapshot snapshot) {
+        try {
+            return objectMapper.writeValueAsString(snapshot);
+        } catch (JsonProcessingException e) {
+            throw new IllegalStateException("Could not store the checkout snapshot", e);
+        }
     }
 
     /** What an order sells for and what the platform earns on it (selling price minus vendor price). */

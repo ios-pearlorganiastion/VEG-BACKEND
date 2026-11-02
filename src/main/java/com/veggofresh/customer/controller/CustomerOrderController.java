@@ -12,7 +12,9 @@ import com.veggofresh.customer.dto.response.OrderTrackingResponseDto;
 import com.veggofresh.customer.dto.response.RatingResponseDto;
 import com.veggofresh.customer.service.DeliverySlotService;
 import com.veggofresh.customer.service.OrderService;
- import com.veggofresh.payment.dto.VerifyPaymentRequestDto;
+ import com.veggofresh.payment.controller.PaymentController;
+import com.veggofresh.payment.dto.PaymentVerifyResultDto;
+import com.veggofresh.payment.dto.VerifyPaymentRequestDto;
 import com.veggofresh.payment.service.PaymentService;
 import com.veggofresh.platform.common.ApiResponse;
 import com.veggofresh.platform.common.PageResponse;
@@ -52,17 +54,17 @@ public class CustomerOrderController {
      * PaymentService so no separate controller is needed on the app side.
      */
     @PostMapping("/verify-payment")
-    public ResponseEntity<ApiResponse<String>> verifyPayment(
+    public ResponseEntity<ApiResponse<PaymentVerifyResultDto>> verifyPayment(
             @Valid @RequestBody VerifyPaymentRequestDto request) {
         // From the security context, never from the request body -- see the
         // ownership check in PaymentServiceImpl.verifyPayment.
-        paymentService.verifyPayment(
+        PaymentVerifyResultDto result = paymentService.verifyPayment(
                 SecurityUtils.getCurrentUserId(),
                 request.getRazorpayOrderId(),
                 request.getRazorpayPaymentId(),
                 request.getRazorpaySignature()
         );
-        return ResponseEntity.ok(ApiResponse.success("Payment verified and authorized successfully", "OK"));
+        return PaymentController.toResponse(result);
     }
 
     /**

@@ -1,6 +1,7 @@
 package com.veggofresh.payment.controller;
 
 import com.veggofresh.payment.dto.PaymentOrderStatusDto;
+import com.veggofresh.payment.dto.PaymentVerifyResultDto;
 import com.veggofresh.payment.dto.VerifyPaymentRequestDto;
 import com.veggofresh.payment.entity.PaymentOrder;
 import com.veggofresh.payment.entity.PaymentOrderLine;
@@ -42,22 +43,41 @@ public class PaymentController {
 
     /**
      * Called by the frontend immediately after Razorpay Checkout.js reports a
-     * successful payment. Verifies the HMAC-SHA256 signature and marks the
-     * PaymentOrder as AUTHORIZED so the vendor-accept flow can proceed.
+     * successful payment. Verifies the HMAC-SHA256 signature, marks the PaymentOrder
+     * AUTHORIZED and <b>creates the orders</b>: checkout no longer returns any, so this
+     * response is where the app learns their ids.
+     *
+     * <p>Safe to call again (for example after a lost response): it returns the same orders and never
+     * creates a second set. If the money was received but the orders could not be placed (cart changed
+     * while paying), the response is a 409 with {@code ORDER_PLACEMENT_FAILED} and nothing is charged.
      */
     @PostMapping("/verify")
     @PreAuthorize("hasRole('CUSTOMER')")
-    public ResponseEntity<ApiResponse<String>> verifyPayment(@Valid @RequestBody VerifyPaymentRequestDto request) {
+    public ResponseEntity<ApiResponse<PaymentVerifyResultDto>> verifyPayment(
+            @Valid @RequestBody VerifyPaymentRequestDto request) {
         // From the security context, never from the request body: the ownership
         // check in PaymentServiceImpl compares against this, so a client-supplied
         // userId would defeat it.
-        paymentService.verifyPayment(
+        PaymentVerifyResultDto result = paymentService.verifyPayment(
                 SecurityUtils.getCurrentUserId(),
                 request.getRazorpayOrderId(),
                 request.getRazorpayPaymentId(),
                 request.getRazorpaySignature()
         );
-        return ResponseEntity.ok(ApiResponse.success("Payment verified and authorized successfully", "OK"));
+        return toResponse(result);
+    }
+
+    /** Shared by this endpoint and the {@code /api/customer/orders/verify-payment} alias. */
+    public static ResponseEntity<ApiResponse<PaymentVerifyResultDto>> toResponse(PaymentVerifyResultDto result) {
+        if ("PLACEMENT_FAILED".equals(result.getStatus())) {
+            return ResponseEntity.status(HttpStatus.CONFLICT).body(ApiResponse.error(
+                    "Your payment went through but your order could not be placed: " + result.getMessage()
+                            + ". You have not been charged; the amount on hold will be released.",
+                    "ORDER_PLACEMENT_FAILED"));
+        }
+        return ResponseEntity.ok(ApiResponse.success(result, result.isOrdersPlaced()
+                ? "Payment verified and your order has been placed"
+                : "Payment verified"));
     }
 
     /**

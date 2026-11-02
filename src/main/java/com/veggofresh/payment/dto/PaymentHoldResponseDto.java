@@ -10,7 +10,7 @@ import java.util.List;
 import java.util.UUID;
 
 /**
- * Returned by {@code PaymentService.createHold(...)}, called once per
+ * Returned by {@code PaymentService.createCheckoutHold(...)}, called once per
  * checkout() invocation (not once per Order) -- carries everything the
  * frontend needs to open Razorpay's Checkout.js widget for the combined
  * total, plus the per-Order breakdown so the UI can show "this payment
@@ -30,5 +30,6 @@ public class PaymentHoldResponseDto {
     private String razorpayKeyId;
     private String currency;
     private BigDecimal totalAmount;
+    /** One entry per cart being paid for. The orders do not exist yet, so {@code orderId} is null. */
     private List<PaymentOrderLineAllocationDto> allocations;
 }

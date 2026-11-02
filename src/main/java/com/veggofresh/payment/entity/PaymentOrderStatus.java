@@ -17,7 +17,13 @@ package com.veggofresh.payment.entity;
  *                      rejected/cancelled before any vendor accepted) -- nothing
  *                      was ever captured, no refund needed.
  * FAILED              Razorpay reported the payment failed/was never authorized.
+ * PLACEMENT_FAILED    The payment was authorized but the orders could not be created
+ *                      (cart changed, item gone, coupon no longer valid). Nothing is
+ *                      ever captured, so the authorization is simply released.
  * </pre>
+ *
+ * PAYMENT FIRST: orders do not exist while a payment is CREATED. They are created in the same
+ * transaction that moves it to AUTHORIZED.
  */
 public enum PaymentOrderStatus {
     CREATED,
@@ -25,9 +31,11 @@ public enum PaymentOrderStatus {
     PARTIALLY_CAPTURED,
     CAPTURED,
     VOIDED,
-    FAILED;
+    FAILED,
+    PLACEMENT_FAILED;
 
     public boolean isTerminal() {
-        return this == PARTIALLY_CAPTURED || this == CAPTURED || this == VOIDED || this == FAILED;
+        return this == PARTIALLY_CAPTURED || this == CAPTURED || this == VOIDED || this == FAILED
+                || this == PLACEMENT_FAILED;
     }
 }

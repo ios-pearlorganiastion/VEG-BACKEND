@@ -22,6 +22,9 @@ import java.util.UUID;
  * accept/reject outcome live in {@link PaymentOrderLine}, one line per
  * Customer Order, all pointing back at this row.
  *
+ * PAYMENT FIRST: a row is created at checkout with the customer's cart snapshot, and the Customer
+ * Orders are only created once this payment is AUTHORIZED (see PaymentAuthorizedHandler).
+ *
  * Money flow: created with payment_capture:0 (manual capture) so nothing is
  * charged at authorization time. Capture only happens once, for the sum of
  * whichever lines are ACCEPTED, once every line in the batch has resolved
@@ -67,4 +70,19 @@ public class PaymentOrder extends BaseEntity {
 
     @Column(name = "is_topup", nullable = false)
     private boolean isTopup = false;
+
+    /**
+     * What the customer was buying, written at checkout and handed back at authorization so the orders can
+     * be created then. Opaque JSON owned by the customer module; null for wallet top-ups.
+     */
+    @Column(name = "checkout_snapshot", columnDefinition = "TEXT")
+    private String checkoutSnapshot;
+
+    /** Set once, in the transaction that creates the orders. Null until then. */
+    @Column(name = "orders_placed_at")
+    private Instant ordersPlacedAt;
+
+    /** Why an authorized payment could not be turned into orders (status PLACEMENT_FAILED). */
+    @Column(name = "placement_failure_reason", length = 500)
+    private String placementFailureReason;
 }

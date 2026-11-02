@@ -1,6 +1,8 @@
 package com.veggofresh.payment.service;
 
 import com.veggofresh.payment.dto.PaymentHoldResponseDto;
+import com.veggofresh.payment.dto.PaymentOrderLineAllocationDto;
+import com.veggofresh.payment.dto.PaymentVerifyResultDto;
 
 import java.math.BigDecimal;
 import java.util.List;
@@ -9,8 +11,12 @@ import java.util.UUID;
 /**
  * Orchestrates the full Razorpay payment lifecycle for an order checkout:
  * hold (order creation with payment_capture:0) → verify (customer pays on Razorpay
- * Checkout.js) → capture (vendor accepts) → void/refund (cancellation) → settle
- * (delivery complete, split to vendor/delivery/platform wallets).
+ * Checkout.js) → ORDERS ARE CREATED → capture (vendor accepts) → void/refund
+ * (cancellation) → settle (delivery complete, split to vendor/delivery/platform wallets).
+ *
+ * <p>PAYMENT FIRST: no Customer Order exists before the payment is AUTHORIZED. Checkout only
+ * creates the payment (and stores what is being bought); authorization, whether it is learned
+ * from the customer's verify call or from the Razorpay webhook, is what creates the orders.
  *
  * Called by Customer module (checkout, cancel) and Vendor module (accept triggers
  * capture via CustomerOrderService). Never imports Customer or Delivery @Entity classes.
@@ -18,21 +24,29 @@ import java.util.UUID;
 public interface PaymentService {
 
     /**
-     * Called once per checkout() invocation (one Razorpay order for the combined total
-     * of all N orders created from the multi-cart checkout). Creates a Razorpay order
-     * with payment_capture:0 and a PaymentOrderLine per Customer Order.
+     * Called once per checkout() invocation. Creates ONE Razorpay order (payment_capture:0) for the
+     * combined total of everything being checked out, and stores the snapshot so the orders can be
+     * created later. <b>No Customer Order and no payment line exists yet</b>: if the customer
+     * dismisses the Razorpay popup, nothing was created and nothing needs cleaning up.
      *
-     * @param userId       the customer's user id
-     * @param orderIds     the list of Customer Order ids created by checkout()
-     * @param orderAmounts the corresponding total amounts (index-matched with orderIds)
+     * @param userId           the customer's user id
+     * @param allocations      one entry per cart being paid for (label and amount; {@code orderId} is
+     *                         null because the order does not exist yet)
+     * @param checkoutSnapshot what the customer is buying, opaque to this module; handed back to
+     *                         {@link PaymentAuthorizedHandler} at authorization
      * @return hold details to embed in CheckoutResultDto so the frontend can open Razorpay Checkout.js
      */
-    PaymentHoldResponseDto createHold(UUID userId, List<UUID> orderIds, List<BigDecimal> orderAmounts);
+    PaymentHoldResponseDto createCheckoutHold(UUID userId, List<PaymentOrderLineAllocationDto> allocations,
+            String checkoutSnapshot);
 
     /**
      * Called when the customer's Razorpay Checkout.js success callback posts back.
      * Verifies the HMAC-SHA256 signature, cross-checks payment status with Razorpay's
-     * API (never trust the frontend alone), and marks the PaymentOrder as AUTHORIZED.
+     * API (never trust the frontend alone), marks the PaymentOrder as AUTHORIZED and
+     * <b>creates the orders</b>.
+     *
+     * <p>Safe to call repeatedly, and safe alongside the webhook: the orders are created once, and every
+     * later call returns the same result.
      *
      * @param razorpayOrderId   the Razorpay order id returned from createHold()
      * @param razorpayPaymentId the payment id from Razorpay's Checkout.js callback
@@ -45,7 +59,15 @@ public interface PaymentService {
      *               checked separately. Not propagated from any client-supplied
      *               field.
      */
-    void verifyPayment(UUID userId, String razorpayOrderId, String razorpayPaymentId, String razorpaySignature);
+    PaymentVerifyResultDto verifyPayment(UUID userId, String razorpayOrderId, String razorpayPaymentId,
+            String razorpaySignature);
+
+    /**
+     * The webhook's way of learning the same fact as {@link #verifyPayment}: Razorpay says this payment is
+     * authorized. Covers the customer whose app died after paying and never called verify. The webhook
+     * signature has already been checked by the caller. Does nothing if the payment was already handled.
+     */
+    void onPaymentAuthorizedByGateway(String razorpayOrderId, String razorpayPaymentId);
 
     /**
      * Called when a vendor accepts one of the orders in the batch. Marks the

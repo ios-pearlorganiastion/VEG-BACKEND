@@ -15,6 +15,10 @@ import java.util.List;
  * {@link #issues} and excluded from {@link #orders} rather than blocking
  * the rest of checkout.
  *
+ * PAYMENT FIRST: {@link #orders} is now ALWAYS EMPTY. Orders are created when the payment is
+ * authorized, so their ids come from the verify response, not from checkout. Carts that were left out
+ * are still reported in {@link #issues}.
+ *
  * PAYMENT INTEGRATION: paymentHold carries the Razorpay order details
  * (razorpayOrderId, keyId, totalAmount) needed to open Checkout.js.
  * It is null only when all orders failed checkout (CHECKOUT_FAILED is thrown).

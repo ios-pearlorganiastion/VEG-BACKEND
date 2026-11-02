@@ -29,7 +29,10 @@ import java.util.UUID;
  * 2. Deduplicate: every event is recorded by razorpay_event_id; a duplicate
  *    event (Razorpay retries on non-2xx) is silently ignored after the first.
  * 3. For {@code payment.authorized}: if the PaymentOrder hasn't been verified
- *    by the customer yet (e.g. Checkout.js callback was missed), mark it AUTHORIZED.
+ *    by the customer yet (e.g. Checkout.js callback was missed, or the app died right after
+ *    paying), authorize it AND create the orders, exactly as verify() would. Orders only
+ *    exist once a payment is authorized, so this is what places the order for a customer
+ *    who paid and then lost connection.
  * 4. Unknown or irrelevant event types are still recorded for the audit trail
  *    but don't change any payment state.
  */
@@ -43,6 +46,7 @@ public class PaymentWebhookServiceImpl implements PaymentWebhookService {
     private final PaymentOrderLineRepository paymentOrderLineRepository;
     private final ObjectMapper objectMapper;
     private final NotificationService notificationService;
+    private final PaymentService paymentService;
 
     /**
      * Optional: a failed payment has to reach the order module to cancel the
@@ -59,6 +63,7 @@ public class PaymentWebhookServiceImpl implements PaymentWebhookService {
             PaymentOrderLineRepository paymentOrderLineRepository,
             ObjectMapper objectMapper,
             NotificationService notificationService,
+            PaymentService paymentService,
             @org.springframework.beans.factory.annotation.Autowired(required = false)
             PaymentFailureHandler paymentFailureHandler) {
         this.razorpayClient = razorpayClient;
@@ -67,6 +72,7 @@ public class PaymentWebhookServiceImpl implements PaymentWebhookService {
         this.paymentOrderLineRepository = paymentOrderLineRepository;
         this.objectMapper = objectMapper;
         this.notificationService = notificationService;
+        this.paymentService = paymentService;
         this.paymentFailureHandler = paymentFailureHandler;
     }
 
@@ -126,8 +132,13 @@ public class PaymentWebhookServiceImpl implements PaymentWebhookService {
             webhookEventRepository.save(record);
         } catch (Exception e) {
             log.error("Error processing webhook event {} (type={}): {}", eventId, eventType, e.getMessage(), e);
-            // Don't re-throw -- return 200 to Razorpay so it doesn't retry an event
-            // we received but had an internal error on. The audit record is already saved.
+            // payment.authorized is the one event that must be retried: it is what creates the customer's
+            // orders, and a failure there has rolled this whole transaction back (including the audit record
+            // above), so redelivery starts clean. Everything else keeps the old behaviour: don't re-throw,
+            // return 200 so Razorpay doesn't retry an event we received but could not act on.
+            if ("payment.authorized".equals(eventType)) {
+                throw e;
+            }
         }
     }
 
@@ -143,25 +154,14 @@ public class PaymentWebhookServiceImpl implements PaymentWebhookService {
                 return;
             }
 
-            Optional<PaymentOrder> paymentOrderOpt = paymentOrderRepository.findByRazorpayOrderId(razorpayOrderId);
-            if (paymentOrderOpt.isEmpty()) {
-                log.warn("payment.authorized: no PaymentOrder found for razorpayOrderId={}", razorpayOrderId);
-                return;
-            }
-
-            PaymentOrder paymentOrder = paymentOrderOpt.get();
-            if (paymentOrder.getStatus() == PaymentOrderStatus.CREATED) {
-                // Customer's verify() call didn't come through -- webhook is the fallback
-                paymentOrder.setRazorpayPaymentId(razorpayPaymentId);
-                paymentOrder.setStatus(PaymentOrderStatus.AUTHORIZED);
-                paymentOrder.setAuthorizedAt(Instant.now());
-                paymentOrderRepository.save(paymentOrder);
-                log.info("PaymentOrder {} authorized via webhook (verify call was missed)", paymentOrder.getId());
-            } else {
-                log.info("PaymentOrder {} already in status {} -- webhook authorization is a no-op", paymentOrder.getId(), paymentOrder.getStatus());
-            }
+            // Authorizes the payment and creates the orders, or does nothing when verify() already did.
+            paymentService.onPaymentAuthorizedByGateway(razorpayOrderId, razorpayPaymentId);
         } catch (Exception e) {
+            // Deliberately NOT swallowed any more. Placing the orders is part of this call, so a failure here
+            // has already rolled the whole attempt back and the payment is still CREATED. Rethrowing makes the
+            // webhook answer non-2xx, which is what makes Razorpay deliver the event again.
             log.error("Error handling payment.authorized webhook: {}", e.getMessage(), e);
+            throw (e instanceof RuntimeException re) ? re : new IllegalStateException(e);
         }
     }
 
@@ -172,6 +172,18 @@ public class PaymentWebhookServiceImpl implements PaymentWebhookService {
             if (razorpayOrderId == null) return;
 
             paymentOrderRepository.findByRazorpayOrderId(razorpayOrderId).ifPresent(po -> {
+                if (po.getStatus() == PaymentOrderStatus.CREATED) {
+                    // One failed ATTEMPT is not a dead payment. Razorpay keeps the order open, so the customer
+                    // can retry (wrong OTP, insufficient balance...) in the same popup and succeed. Nothing
+                    // exists on our side to cancel yet, and marking the payment terminal here would make that
+                    // later successful payment be ignored: the customer would pay and get no order.
+                    notificationService.send(po.getUserId(), NotificationRecipientRole.CUSTOMER,
+                            NotificationType.PAYMENT_FAILED,
+                            "Payment failed", "Your payment could not be completed — please try again",
+                            "{\"paymentOrderId\":\"" + po.getId() + "\"}");
+                    log.info("PaymentOrder {}: a payment attempt failed; payment left open for a retry", po.getId());
+                    return;
+                }
                 if (!po.getStatus().isTerminal()) {
                     po.setStatus(PaymentOrderStatus.FAILED);
                     paymentOrderRepository.save(po);

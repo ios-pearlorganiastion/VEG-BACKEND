@@ -9,6 +9,7 @@ import com.veggofresh.payment.client.RazorpayClient;
 import com.veggofresh.payment.client.RazorpayPaymentStatus;
 import com.veggofresh.payment.dto.PaymentHoldResponseDto;
 import com.veggofresh.payment.dto.PaymentOrderLineAllocationDto;
+import com.veggofresh.payment.dto.PaymentVerifyResultDto;
 import com.veggofresh.payment.entity.PaymentOrder;
 import com.veggofresh.payment.entity.PaymentOrderLine;
 import com.veggofresh.payment.entity.PaymentOrderLineStatus;
@@ -18,6 +19,7 @@ import com.veggofresh.payment.repository.PaymentOrderRepository;
 import com.veggofresh.platform.exception.BusinessException;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -26,15 +28,19 @@ import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
 /**
- * Orchestrates Razorpay payment lifecycle: hold → verify → capture/void →
- * settle.
+ * Orchestrates Razorpay payment lifecycle: hold → verify → (orders created) →
+ * capture/void → settle.
  *
  * Key design decisions:
+ * 0. PAYMENT FIRST. Checkout creates only the payment plus a snapshot of what is being bought. The
+ * Customer Orders (and their payment lines) are created in the same transaction that moves the payment
+ * to AUTHORIZED, whichever of verify() or the webhook gets there first.
  * 1. One Razorpay order per checkout() call (batch), not per Customer Order.
  * 2. Capture happens exactly once per batch, for the sum of ACCEPTED lines,
  * once
@@ -56,16 +62,25 @@ public class PaymentServiceImpl implements PaymentService {
     private final NotificationService notificationService;
     private final PlatformSettingsService platformSettingsService;
     private final CouponCheckoutService couponService;
+    /**
+     * The order side, asked to create the orders once a payment is authorized. An ObjectProvider rather than
+     * the bean itself: the customer module already depends on this class (checkout, cancel), so injecting
+     * its implementation directly would make the two beans wait for each other at startup.
+     */
+    private final ObjectProvider<PaymentAuthorizedHandler> placementHandler;
 
     @Override
     @Transactional
-    public PaymentHoldResponseDto createHold(UUID userId, List<UUID> orderIds, List<BigDecimal> orderAmounts) {
-        if (orderIds.isEmpty()) {
-            throw new BusinessException("PAYMENT_NO_ORDERS", "Cannot create a payment hold with no orders",
+    public PaymentHoldResponseDto createCheckoutHold(UUID userId, List<PaymentOrderLineAllocationDto> allocations,
+            String checkoutSnapshot) {
+        if (allocations == null || allocations.isEmpty()) {
+            throw new BusinessException("PAYMENT_NO_ORDERS", "Cannot create a payment with nothing to pay for",
                     HttpStatus.BAD_REQUEST);
         }
 
-        BigDecimal total = orderAmounts.stream().reduce(BigDecimal.ZERO, BigDecimal::add);
+        BigDecimal total = allocations.stream()
+                .map(PaymentOrderLineAllocationDto::getAmount)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
 
         // 1. Save the entity first with a dummy Razorpay ID to get the JVM UUID
         // without violating the NOT NULL constraint if Razorpay fails.
@@ -75,6 +90,7 @@ public class PaymentServiceImpl implements PaymentService {
         paymentOrder.setCurrency("INR");
         paymentOrder.setStatus(PaymentOrderStatus.CREATED);
         paymentOrder.setRazorpayOrderId("PENDING-" + UUID.randomUUID());
+        paymentOrder.setCheckoutSnapshot(checkoutSnapshot);
         PaymentOrder saved = paymentOrderRepository.save(paymentOrder);
 
         // 2. Call Razorpay with our actual DB ID
@@ -84,24 +100,10 @@ public class PaymentServiceImpl implements PaymentService {
         saved.setRazorpayOrderId(razorpayOrderId);
         paymentOrderRepository.save(saved);
 
-        List<PaymentOrderLineAllocationDto> allocations = new ArrayList<>();
-        for (int i = 0; i < orderIds.size(); i++) {
-            PaymentOrderLine line = new PaymentOrderLine();
-            line.setPaymentOrderId(saved.getId());
-            line.setOrderId(orderIds.get(i));
-            line.setAmount(orderAmounts.get(i));
-            line.setStatus(PaymentOrderLineStatus.PENDING);
-            paymentOrderLineRepository.save(line);
-
-            allocations.add(PaymentOrderLineAllocationDto.builder()
-                    .orderId(orderIds.get(i))
-                    .orderNumber("Order " + (i + 1))
-                    .amount(orderAmounts.get(i))
-                    .build());
-        }
-
-        log.info("Payment hold created: paymentOrderId={} razorpayOrderId={} total={} orders={}",
-                saved.getId(), razorpayOrderId, total, orderIds.size());
+        // No PaymentOrderLine yet: there is no order to point at. The lines are written when the payment is
+        // authorized and the orders are created (see placeOrders).
+        log.info("Checkout payment created: paymentOrderId={} razorpayOrderId={} total={} carts={}",
+                saved.getId(), razorpayOrderId, total, allocations.size());
 
         return PaymentHoldResponseDto.builder()
                 .paymentOrderId(saved.getId())
@@ -145,7 +147,8 @@ public class PaymentServiceImpl implements PaymentService {
 
     @Override
     @Transactional
-    public void verifyPayment(UUID userId, String razorpayOrderId, String razorpayPaymentId, String razorpaySignature) {
+    public PaymentVerifyResultDto verifyPayment(UUID userId, String razorpayOrderId, String razorpayPaymentId,
+            String razorpaySignature) {
         // 1. Verify HMAC-SHA256 signature (Razorpay Checkout.js convention)
         boolean signatureValid = razorpayClient.verifyPaymentSignature(razorpayOrderId, razorpayPaymentId,
                 razorpaySignature);
@@ -154,15 +157,7 @@ public class PaymentServiceImpl implements PaymentService {
                     "Payment signature verification failed -- this request may be forged", HttpStatus.BAD_REQUEST);
         }
 
-        // 2. Cross-check with Razorpay (never trust frontend alone)
-        RazorpayPaymentStatus gatewayStatus = razorpayClient.fetchPaymentStatus(razorpayPaymentId);
-        if (!gatewayStatus.isAuthorized()) {
-            throw new BusinessException("PAYMENT_NOT_AUTHORIZED",
-                    "Payment is not in authorized state on Razorpay (status: " + gatewayStatus.status() + ")",
-                    HttpStatus.BAD_REQUEST);
-        }
-
-        // 3. Update our PaymentOrder
+        // 2. Our PaymentOrder, and whose it is.
         PaymentOrder paymentOrder = paymentOrderRepository.findByRazorpayOrderId(razorpayOrderId)
                 .orElseThrow(() -> new BusinessException("PAYMENT_ORDER_NOT_FOUND",
                         "No payment order found for razorpayOrderId: " + razorpayOrderId, HttpStatus.NOT_FOUND));
@@ -181,10 +176,61 @@ public class PaymentServiceImpl implements PaymentService {
                     "No payment order found for razorpayOrderId: " + razorpayOrderId, HttpStatus.NOT_FOUND);
         }
 
-        if (paymentOrder.getStatus().isTerminal()) {
-            log.warn("verifyPayment called on already-terminal PaymentOrder {} (status={}), ignoring",
+        // 3. Already handled? The webhook may have got here first, or the app is retrying a verify whose reply
+        // it never received. Answer from our own state, WITHOUT asking Razorpay again: once the money is
+        // captured the payment is no longer "authorized" at the gateway, which would turn a harmless retry
+        // into an error.
+        if (paymentOrder.getStatus() != PaymentOrderStatus.CREATED) {
+            log.info("verifyPayment: paymentOrderId={} is already {} -- returning the existing result",
+                    paymentOrder.getId(), paymentOrder.getStatus());
+            return resultFor(paymentOrder);
+        }
+
+        // 4. Cross-check with Razorpay (never trust frontend alone)
+        RazorpayPaymentStatus gatewayStatus = razorpayClient.fetchPaymentStatus(razorpayPaymentId);
+        if (!gatewayStatus.isAuthorized()) {
+            throw new BusinessException("PAYMENT_NOT_AUTHORIZED",
+                    "Payment is not in authorized state on Razorpay (status: " + gatewayStatus.status() + ")",
+                    HttpStatus.BAD_REQUEST);
+        }
+
+        // 5. Authorize, and create the orders.
+        return authorizeAndPlaceOrders(paymentOrder.getId(), razorpayPaymentId);
+    }
+
+    @Override
+    @Transactional
+    public void onPaymentAuthorizedByGateway(String razorpayOrderId, String razorpayPaymentId) {
+        Optional<PaymentOrder> paymentOrderOpt = paymentOrderRepository.findByRazorpayOrderId(razorpayOrderId);
+        if (paymentOrderOpt.isEmpty()) {
+            log.warn("payment.authorized: no PaymentOrder found for razorpayOrderId={}", razorpayOrderId);
+            return;
+        }
+        PaymentOrder paymentOrder = paymentOrderOpt.get();
+        if (paymentOrder.getStatus() != PaymentOrderStatus.CREATED) {
+            log.info("PaymentOrder {} already in status {} -- webhook authorization is a no-op",
                     paymentOrder.getId(), paymentOrder.getStatus());
             return;
+        }
+        log.info("PaymentOrder {} authorized via webhook (the customer's verify call has not arrived)",
+                paymentOrder.getId());
+        authorizeAndPlaceOrders(paymentOrder.getId(), razorpayPaymentId);
+    }
+
+    /**
+     * The one place a payment becomes AUTHORIZED, reached from both verify() and the webhook.
+     *
+     * <p>The row is locked first and its status re-read under the lock, so when verify and the webhook arrive
+     * together exactly one of them does the work and the other sees the finished result. That is what keeps
+     * the customer from getting two copies of every order.
+     */
+    private PaymentVerifyResultDto authorizeAndPlaceOrders(UUID paymentOrderId, String razorpayPaymentId) {
+        PaymentOrder paymentOrder = paymentOrderRepository.findByIdForUpdate(paymentOrderId)
+                .orElseThrow(() -> new BusinessException("PAYMENT_ORDER_NOT_FOUND",
+                        "No payment order found: " + paymentOrderId, HttpStatus.NOT_FOUND));
+
+        if (paymentOrder.getStatus() != PaymentOrderStatus.CREATED) {
+            return resultFor(paymentOrder); // lost the race: the other path already did it
         }
 
         paymentOrder.setRazorpayPaymentId(razorpayPaymentId);
@@ -192,28 +238,91 @@ public class PaymentServiceImpl implements PaymentService {
         paymentOrder.setAuthorizedAt(Instant.now());
         paymentOrderRepository.save(paymentOrder);
 
-        log.info("Payment verified and authorized: paymentOrderId={} razorpayPaymentId={}", paymentOrder.getId(),
+        log.info("Payment authorized: paymentOrderId={} razorpayPaymentId={}", paymentOrder.getId(),
                 razorpayPaymentId);
 
         // If it's a top-up, we auto-capture immediately (no vendor acceptance needed)
         if (paymentOrder.isTopup()) {
-            log.info("Auto-capturing top-up paymentOrderId={}", paymentOrder.getId());
-            razorpayClient.capturePayment(razorpayPaymentId, paymentOrder.getTotalAmount(), paymentOrder.getCurrency());
-
-            paymentOrder.setStatus(PaymentOrderStatus.CAPTURED);
-            paymentOrder.setCapturedAmount(paymentOrder.getTotalAmount());
-            paymentOrder.setCapturedAt(Instant.now());
-            paymentOrderRepository.save(paymentOrder);
-
-            walletService.credit(
-                    paymentOrder.getUserId(),
-                    paymentOrder.getTotalAmount(),
-                    WalletTransactionReason.WALLET_TOP_UP,
-                    paymentOrder.getId(),
-                    "Wallet top-up via Razorpay");
-            notifyPaymentSuccess(paymentOrder.getUserId(), paymentOrder.getId(), paymentOrder.getTotalAmount());
-            log.info("Top-up complete. Wallet credited for paymentOrderId={}", paymentOrder.getId());
+            completeTopup(paymentOrder, razorpayPaymentId);
+            return resultFor(paymentOrder);
         }
+
+        placeOrders(paymentOrder);
+        return resultFor(paymentOrder);
+    }
+
+    /**
+     * Asks the order side to create the orders for this authorized payment. Either the orders and their
+     * payment lines now exist, or the payment is marked PLACEMENT_FAILED, is never captured, and the customer
+     * is told. An unexpected exception from the handler propagates on purpose: everything rolls back, the
+     * payment stays CREATED, and the next verify call or webhook retry tries again.
+     */
+    private void placeOrders(PaymentOrder paymentOrder) {
+        PaymentAuthorizedHandler handler = placementHandler.getObject();
+        PlacementOutcome outcome = handler.placeOrders(paymentOrder.getId(), paymentOrder.getUserId(),
+                paymentOrder.getCheckoutSnapshot(), paymentOrder.getTotalAmount());
+
+        if (outcome.isPlaced()) {
+            for (PlacementOutcome.PlacedOrder placed : outcome.orders()) {
+                PaymentOrderLine line = new PaymentOrderLine();
+                line.setPaymentOrderId(paymentOrder.getId());
+                line.setOrderId(placed.orderId());
+                line.setAmount(placed.amount());
+                line.setStatus(PaymentOrderLineStatus.PENDING);
+                paymentOrderLineRepository.save(line);
+            }
+            paymentOrder.setOrdersPlacedAt(Instant.now());
+            paymentOrderRepository.save(paymentOrder);
+            log.info("Orders placed for paymentOrderId={}: {} order(s)", paymentOrder.getId(),
+                    outcome.orders().size());
+            return;
+        }
+
+        String reason = outcome.failureReason();
+        paymentOrder.setStatus(PaymentOrderStatus.PLACEMENT_FAILED);
+        paymentOrder.setPlacementFailureReason(
+                reason != null && reason.length() > 500 ? reason.substring(0, 500) : reason);
+        paymentOrderRepository.save(paymentOrder);
+        log.warn("Payment {} was authorized but its orders could not be placed ({}). Nothing will be captured.",
+                paymentOrder.getId(), reason);
+        notificationService.send(paymentOrder.getUserId(), NotificationRecipientRole.CUSTOMER,
+                NotificationType.PAYMENT_FAILED, "We couldn't place your order",
+                "Your payment went through but your order could not be placed: " + reason
+                        + ". You have not been charged; the amount on hold will be released.",
+                "{\"paymentOrderId\":\"" + paymentOrder.getId() + "\"}");
+    }
+
+    private void completeTopup(PaymentOrder paymentOrder, String razorpayPaymentId) {
+        log.info("Auto-capturing top-up paymentOrderId={}", paymentOrder.getId());
+        razorpayClient.capturePayment(razorpayPaymentId, paymentOrder.getTotalAmount(), paymentOrder.getCurrency());
+
+        paymentOrder.setStatus(PaymentOrderStatus.CAPTURED);
+        paymentOrder.setCapturedAmount(paymentOrder.getTotalAmount());
+        paymentOrder.setCapturedAt(Instant.now());
+        paymentOrderRepository.save(paymentOrder);
+
+        walletService.credit(
+                paymentOrder.getUserId(),
+                paymentOrder.getTotalAmount(),
+                WalletTransactionReason.WALLET_TOP_UP,
+                paymentOrder.getId(),
+                "Wallet top-up via Razorpay");
+        notifyPaymentSuccess(paymentOrder.getUserId(), paymentOrder.getId(), paymentOrder.getTotalAmount());
+        log.info("Top-up complete. Wallet credited for paymentOrderId={}", paymentOrder.getId());
+    }
+
+    private PaymentVerifyResultDto resultFor(PaymentOrder paymentOrder) {
+        List<UUID> orderIds = paymentOrderLineRepository.findByPaymentOrderId(paymentOrder.getId()).stream()
+                .map(PaymentOrderLine::getOrderId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toList());
+        return PaymentVerifyResultDto.builder()
+                .paymentOrderId(paymentOrder.getId())
+                .status(paymentOrder.getStatus().name())
+                .ordersPlaced(paymentOrder.getOrdersPlacedAt() != null)
+                .orderIds(orderIds)
+                .message(paymentOrder.getPlacementFailureReason())
+                .build();
     }
 
     @Override
