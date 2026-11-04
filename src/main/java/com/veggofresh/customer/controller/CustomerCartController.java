@@ -2,6 +2,7 @@ package com.veggofresh.customer.controller;
 
 import com.veggofresh.customer.dto.request.CartItemRequestDto;
 import com.veggofresh.customer.dto.request.PromoCodeRequestDto;
+import com.veggofresh.customer.dto.response.CartPromoPreviewDto;
 import com.veggofresh.customer.dto.response.CartResponseDto;
 import com.veggofresh.customer.service.CartService;
 import com.veggofresh.platform.common.ApiResponse;
@@ -88,6 +89,19 @@ public class CustomerCartController {
     public ResponseEntity<ApiResponse<List<ProductDto>>> getRecommendations() {
         List<ProductDto> products = cartService.getCartRecommendations(SecurityUtils.getCurrentUserId());
         return ResponseEntity.ok(ApiResponse.success(products, "Cart recommendations retrieved successfully"));
+    }
+
+    /**
+     * Combined coupon preview for the cart screen: what the customer's coupon is worth for the carts paid
+     * TOGETHER. No {@code cartIds} = every open cart (what a one-click checkout of everything would give);
+     * {@code cartIds} = only those carts (e.g. a single cart). Valued exactly like the checkout summary.
+     */
+    @GetMapping("/promo-preview")
+    public ResponseEntity<ApiResponse<CartPromoPreviewDto>> previewPromo(
+            @RequestParam(required = false) List<UUID> cartIds,
+            @RequestParam(required = false) String couponCode) {
+        CartPromoPreviewDto preview = cartService.previewPromo(SecurityUtils.getCurrentUserId(), cartIds, couponCode);
+        return ResponseEntity.ok(ApiResponse.success(preview, "Promo preview retrieved successfully"));
     }
 
     @PostMapping("/{cartId}/promo-code")

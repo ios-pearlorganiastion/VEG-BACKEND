@@ -1,6 +1,7 @@
 package com.veggofresh.customer.service;
 
 import com.veggofresh.customer.dto.request.CartItemRequestDto;
+import com.veggofresh.customer.dto.response.CartPromoPreviewDto;
 import com.veggofresh.customer.dto.response.CartResponseDto;
 import com.veggofresh.vendor.dto.ProductDto;
 
@@ -58,4 +59,13 @@ public interface CartService {
     List<CartResponseDto> applyPromoCode(UUID userId, UUID cartId, String code);
 
     List<CartResponseDto> removePromoCode(UUID userId, UUID cartId);
+
+    /**
+     * What the customer's coupon is worth for the given carts paid TOGETHER (all open carts when
+     * {@code cartIds} is null or empty), valued exactly as the checkout summary and checkout value it. The
+     * cart list shows each cart's coupon value alone; this is the combined view for the cart screen.
+     *
+     * @param couponCode optional: value this code instead of the one the customer is holding
+     */
+    CartPromoPreviewDto previewPromo(UUID userId, List<UUID> cartIds, String couponCode);
 }

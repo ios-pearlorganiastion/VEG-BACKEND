@@ -3,10 +3,12 @@ package com.veggofresh.customer.service.impl;
 import com.veggofresh.admin.service.AdminProductService;
 import com.veggofresh.admin.service.PlatformSettingsService;
 import com.veggofresh.coupon.dto.CouponPreview;
+import com.veggofresh.coupon.dto.CouponQuote;
 import com.veggofresh.coupon.service.CouponCheckoutService;
 import com.veggofresh.coupon.service.CouponMath;
 import com.veggofresh.customer.dto.request.CartItemRequestDto;
 import com.veggofresh.customer.dto.response.CartItemResponseDto;
+import com.veggofresh.customer.dto.response.CartPromoPreviewDto;
 import com.veggofresh.customer.dto.response.CartResponseDto;
 import com.veggofresh.customer.entity.Address;
 import com.veggofresh.customer.entity.Cart;
@@ -493,7 +495,16 @@ public class CartServiceImpl implements CartService {
         if (carts.isEmpty() || !couponService.holdsCoupon(userId)) {
             return CouponPreview.none();
         }
-        java.util.Set<UUID> productIds = new java.util.HashSet<>();
+        return couponService.previewEach(userId, couponBases(carts, products));
+    }
+
+    /**
+     * What each cart sells for and what the platform earns on it (customer price minus vendor price), in the
+     * form the coupon calculation takes. The ONE place this is worked out for the cart screen, shared by the
+     * per-cart estimate and the combined {@link #previewPromo} so the two can never disagree about a cart.
+     */
+    private List<CouponMath.Basis> couponBases(List<Cart> carts, Map<UUID, ProductDto> products) {
+        Set<UUID> productIds = new HashSet<>();
         for (Cart cart : carts) {
             for (CartItem item : cart.getItems()) {
                 if (products.containsKey(item.getProductId())) {
@@ -521,7 +532,55 @@ public class CartServiceImpl implements CartService {
             }
             bases.add(new CouponMath.Basis(cart.getId(), items, margin));
         }
-        return couponService.previewEach(userId, bases);
+        return bases;
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public CartPromoPreviewDto previewPromo(UUID userId, List<UUID> cartIds, String couponCode) {
+        CartVendorResolver.Session vendors = newSessionFor(userId);
+        List<Cart> carts = vendors.visibleCarts(cartRepository.findByUserIdOrderByCreatedAtAscIdAsc(userId));
+
+        // Same selection rule as the checkout summary: no ids = every open cart, ids = only those.
+        if (cartIds != null && !cartIds.isEmpty()) {
+            Set<UUID> wanted = new HashSet<>(cartIds);
+            carts = carts.stream().filter(cart -> wanted.contains(cart.getId())).collect(Collectors.toList());
+            if (carts.isEmpty()) {
+                throw new BusinessException("CART_NOT_FOUND",
+                        "None of the specified cart IDs were found in your open carts", HttpStatus.BAD_REQUEST);
+            }
+        }
+        if (carts.isEmpty()) {
+            // An empty bag is a normal state for a cart screen, not an error.
+            return CartPromoPreviewDto.builder()
+                    .status(CouponQuote.Status.NONE.name())
+                    .itemsSubtotal(BigDecimal.ZERO)
+                    .discount(BigDecimal.ZERO)
+                    .perCart(new ArrayList<>())
+                    .build();
+        }
+
+        List<CouponMath.Basis> bases = couponBases(carts, resolveProducts(carts, vendors));
+        BigDecimal itemsSubtotal = BigDecimal.ZERO;
+        for (CouponMath.Basis basis : bases) {
+            itemsSubtotal = itemsSubtotal.add(basis.items());
+        }
+
+        // The same read-only valuation the checkout summary and checkout use, over the carts paid together.
+        CouponQuote quote = couponService.quote(userId, couponCode, bases);
+
+        List<CartPromoPreviewDto.CartShare> perCart = new ArrayList<>(bases.size());
+        for (CouponMath.Basis basis : bases) {
+            perCart.add(new CartPromoPreviewDto.CartShare(basis.key(), quote.shareOf(basis.key())));
+        }
+        return CartPromoPreviewDto.builder()
+                .promoCode(quote.code())
+                .status(quote.status().name())
+                .itemsSubtotal(itemsSubtotal)
+                .discount(quote.total())
+                .message(quote.message())
+                .perCart(perCart)
+                .build();
     }
 
     /**
