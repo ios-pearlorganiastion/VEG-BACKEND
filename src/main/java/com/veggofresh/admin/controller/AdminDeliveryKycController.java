@@ -2,9 +2,11 @@ package com.veggofresh.admin.controller;
 
 import com.veggofresh.delivery.dto.DeliveryKycDetailDto;
 import com.veggofresh.delivery.dto.DeliveryKycReviewDto;
+import com.veggofresh.delivery.entity.DeliveryKycSection;
 import com.veggofresh.delivery.service.DeliveryKycService;
 import com.veggofresh.platform.common.ApiResponse;
 import com.veggofresh.platform.common.PageResponse;
+import com.veggofresh.platform.security.SecurityUtils;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
@@ -17,6 +19,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.util.List;
 import java.util.UUID;
 
 /**
@@ -65,17 +68,24 @@ public class AdminDeliveryKycController {
         return ResponseEntity.ok(ApiResponse.success(detail, "Delivery partner KYC detail retrieved successfully"));
     }
 
+    /** Only an application that is under review can be approved (409 {@code KYC_NOT_UNDER_REVIEW} otherwise). */
     @PutMapping("/{userId}/approve")
     public ResponseEntity<ApiResponse<Void>> approve(@PathVariable UUID userId) {
-        deliveryKycService.approveKyc(userId);
+        deliveryKycService.approveKyc(SecurityUtils.getCurrentUserId(), userId);
         return ResponseEntity.ok(ApiResponse.success("Delivery partner KYC approved successfully"));
     }
 
+    /**
+     * Sends the application back. {@code reason} is required and is shown to the rider. {@code sections}
+     * (optional, repeatable: BASIC_INFO, LICENSE, VEHICLE, BANK) tells the app which parts to highlight, e.g.
+     * {@code ?reason=License photo is blurry&sections=LICENSE}. Only an application that is under review can be rejected.
+     */
     @PutMapping("/{userId}/reject")
     public ResponseEntity<ApiResponse<Void>> reject(
             @PathVariable UUID userId,
-            @RequestParam String reason) {
-        deliveryKycService.rejectKyc(userId, reason);
+            @RequestParam String reason,
+            @RequestParam(required = false) List<DeliveryKycSection> sections) {
+        deliveryKycService.rejectKyc(SecurityUtils.getCurrentUserId(), userId, reason, sections);
         return ResponseEntity.ok(ApiResponse.success("Delivery partner KYC rejected"));
     }
 }

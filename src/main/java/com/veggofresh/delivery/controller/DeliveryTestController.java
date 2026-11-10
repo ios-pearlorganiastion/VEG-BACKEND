@@ -6,6 +6,7 @@ import com.veggofresh.delivery.service.DeliveryProfileService;
 import com.veggofresh.platform.common.ApiResponse;
 import com.veggofresh.platform.security.SecurityUtils;
 import lombok.RequiredArgsConstructor;
+import org.springframework.context.annotation.Profile;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -29,6 +30,9 @@ import java.util.UUID;
  * or Vendor module wires the real dispatch trigger on order confirmation. Do not merge
  * this to a production branch as-is — /test/dispatch has no role restriction.
  */
+// Self-approval for local testing only. Never available in production: a rider must not be able to approve
+// their own application. Active in every profile except "prod".
+@Profile("!prod")
 @RestController
 @RequestMapping("/api/delivery/test")
 @RequiredArgsConstructor

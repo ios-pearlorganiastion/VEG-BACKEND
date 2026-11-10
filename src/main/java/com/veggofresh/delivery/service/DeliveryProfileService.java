@@ -12,7 +12,6 @@ public interface DeliveryProfileService {
     DeliveryProfileResponseDto getOrCreateProfile(UUID userId);
     DeliveryProfileResponseDto updateProfile(UUID userId, DeliveryProfileRequestDto request);
     DeliveryProfileResponseDto updateStatus(UUID userId, DeliveryLocationStatusRequestDto request);
-    DeliveryProfileResponseDto submitKycDocuments(UUID userId);
 
     /** TEST-ONLY. Force-approves KYC so the online/accept/pickup flow is testable
      *  before the Admin module's real approval endpoint exists. Remove before prod. */

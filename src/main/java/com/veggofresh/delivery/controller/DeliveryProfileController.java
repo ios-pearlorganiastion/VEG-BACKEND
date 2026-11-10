@@ -47,12 +47,6 @@ public class DeliveryProfileController {
         return ResponseEntity.ok(ApiResponse.success(profile, "Profile updated successfully"));
     }
 
-    @PostMapping("/kyc-documents")
-    public ResponseEntity<ApiResponse<DeliveryProfileResponseDto>> submitKycDocuments() {
-        var profile = deliveryProfileService.submitKycDocuments(SecurityUtils.getCurrentUserId());
-        return ResponseEntity.ok(ApiResponse.success(profile, "KYC documents submitted for review"));
-    }
-
     @PutMapping("/status")
     public ResponseEntity<ApiResponse<DeliveryProfileResponseDto>> updateStatus(
             @Valid @RequestBody DeliveryLocationStatusRequestDto request) {

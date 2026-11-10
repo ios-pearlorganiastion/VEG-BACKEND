@@ -17,4 +17,11 @@ public interface PayoutRequestRepository extends JpaRepository<PayoutRequest, UU
     Page<PayoutRequest> findByStatusOrderByCreatedAtDesc(PayoutRequestStatus status, Pageable pageable);
 
     java.util.Optional<PayoutRequest> findByRazorpayPayoutId(String razorpayPayoutId);
+
+    /**
+     * How many of a user's payout requests are in the given status. Used to refuse a bank-account change while
+     * payouts are still PENDING: those read the bank details only when an admin approves them, so changing the
+     * account in between would send them to the new account.
+     */
+    long countByUserIdAndStatus(UUID userId, PayoutRequestStatus status);
 }

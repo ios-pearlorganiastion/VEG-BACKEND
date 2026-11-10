@@ -4,6 +4,7 @@ import com.veggofresh.admin.dto.AdminCustomerDto;
 import com.veggofresh.admin.dto.AdminDeliveryPartnerDto;
 import com.veggofresh.admin.dto.AdminVendorDto;
 import com.veggofresh.admin.service.AdminUserListService;
+import com.veggofresh.delivery.entity.DeliveryApplicationState;
 import com.veggofresh.delivery.entity.DeliveryKycStatus;
 import com.veggofresh.platform.common.ApiResponse;
 import com.veggofresh.platform.common.PageResponse;
@@ -188,7 +189,10 @@ public class AdminUserListController {
      * Returns a paginated, filtered, sortable list of all delivery partners.
      *
      * @param search    free-text search (name / email / city / vehicle type / plate)
-     * @param kycStatus filter by KYC status
+     * @param kycStatus filter by KYC status. PENDING means "waiting for review" and does NOT include riders who
+     *                  have only started onboarding
+     * @param applicationState filter by DRAFT, UNDER_REVIEW, APPROVED or REJECTED (takes precedence over kycStatus).
+     *                  Use APPROVED for an "approved riders" screen and DRAFT to find riders who never submitted
      * @param isOnline  filter by online state
      * @param page      page index (0-based)
      * @param size      page size (max 100)
@@ -198,13 +202,14 @@ public class AdminUserListController {
     public ResponseEntity<ApiResponse<PageResponse<AdminDeliveryPartnerDto>>> getAllDeliveryPartners(
             @RequestParam(required = false) String search,
             @RequestParam(required = false) DeliveryKycStatus kycStatus,
+            @RequestParam(required = false) DeliveryApplicationState applicationState,
             @RequestParam(required = false) Boolean isOnline,
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "20") int size,
             @RequestParam(defaultValue = "newest") String sort) {
 
         PageRequest pageRequest = buildPageRequest(page, size, sort);
-        Page<AdminDeliveryPartnerDto> result = adminUserListService.getAllDeliveryPartners(search, kycStatus, isOnline, pageRequest);
+        Page<AdminDeliveryPartnerDto> result = adminUserListService.getAllDeliveryPartners(search, kycStatus, applicationState, isOnline, pageRequest);
         return ResponseEntity.ok(ApiResponse.success(
                 PageResponse.of(result),
                 "Delivery partners retrieved successfully"));
@@ -219,10 +224,11 @@ public class AdminUserListController {
     public ResponseEntity<byte[]> exportDeliveryPartnersPdf(
             @RequestParam(required = false) String search,
             @RequestParam(required = false) DeliveryKycStatus kycStatus,
+            @RequestParam(required = false) DeliveryApplicationState applicationState,
             @RequestParam(required = false) Boolean isOnline,
             @RequestParam(defaultValue = "500") int limit) {
 
-        List<AdminDeliveryPartnerDto> partners = adminUserListService.getDeliveryPartnersForExport(search, kycStatus, isOnline, limit);
+        List<AdminDeliveryPartnerDto> partners = adminUserListService.getDeliveryPartnersForExport(search, kycStatus, applicationState, isOnline, limit);
         byte[] pdf = adminUserListService.generateDeliveryPartnersPdf(partners);
         return ResponseEntity.ok()
                 .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"veggofresh_delivery_partners.pdf\"")

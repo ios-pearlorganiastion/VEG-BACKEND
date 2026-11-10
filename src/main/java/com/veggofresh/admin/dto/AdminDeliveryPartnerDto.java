@@ -49,8 +49,23 @@ public class AdminDeliveryPartnerDto {
     /** City of operation */
     private String cityOfOperation;
 
-    /** KYC verification status */
+    /** KYC verification status. PENDING for BOTH a draft and a submitted application: use applicationState. */
     private DeliveryKycStatus kycStatus;
+
+    /**
+     * DRAFT, UNDER_REVIEW, APPROVED or REJECTED. Use this, not kycStatus, to tell a rider who has only started
+     * onboarding (DRAFT) from one whose application is waiting for review (UNDER_REVIEW).
+     */
+    private String applicationState;
+
+    /** When the application was submitted; null for a draft. */
+    private Instant submittedAt;
+
+    /** How many times the rider has submitted. */
+    private int submissionCount;
+
+    /** How many times the application has been rejected. */
+    private int rejectionCount;
 
     /** Whether the partner is currently online */
     private boolean isOnline;

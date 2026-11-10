@@ -10,6 +10,7 @@ import lombok.Getter;
 import lombok.Setter;
 import org.hibernate.annotations.Where;
 
+import java.time.Instant;
 import java.util.UUID;
 
 /**
@@ -30,9 +31,29 @@ public class DeliveryPartnerProfile extends BaseEntity {
     @Column(name = "kyc_status", nullable = false, length = 50)
     private DeliveryKycStatus kycStatus = DeliveryKycStatus.PENDING;
 
-    /** NEW THIS ROUND -- set by DeliveryKycServiceImpl.rejectKyc(). Null unless kycStatus == REJECTED. */
+    /** Set by DeliveryKycServiceImpl.rejectKyc() and cleared on approval or resubmission. Null unless kycStatus == REJECTED. */
     @Column(name = "rejection_reason", length = 500)
     private String rejectionReason;
+
+    /** The sections the admin sent back with the current rejection (comma-separated {@link DeliveryKycSection}); null otherwise. */
+    @Column(name = "rejected_sections", length = 200)
+    private String rejectedSections;
+
+    /**
+     * When the rider submitted the final onboarding step. NULL means the application is still a draft: the
+     * only reliable "has this been sent for review?" signal, because {@link #kycStatus} is PENDING from the
+     * moment the profile exists. Cleared again if the rider withdraws. See {@link DeliveryApplicationState}.
+     */
+    @Column(name = "application_submitted_at")
+    private Instant applicationSubmittedAt;
+
+    /** How many times the rider has submitted (never decreases; a withdrawal does not undo it). */
+    @Column(name = "submission_count", nullable = false)
+    private int submissionCount = 0;
+
+    /** How many times an admin has rejected this rider's application. */
+    @Column(name = "rejection_count", nullable = false)
+    private int rejectionCount = 0;
 
     @Column(name = "is_online", nullable = false)
     private boolean online = false;
@@ -131,7 +152,7 @@ public class DeliveryPartnerProfile extends BaseEntity {
     @Column(name = "has_basic_info", nullable = false)
     private boolean hasBasicInfo = false;
 
-    /** 0 = not started, 1 = license done, 2 = vehicle details done, 3 = bank details done (submitted). */
+    /** 0 = not started, 1 = license done, 2 = vehicle details done, 3 = bank details done (the final step, which submits). */
     @Column(name = "verification_step", nullable = false)
     private int verificationStep = 0;
 }

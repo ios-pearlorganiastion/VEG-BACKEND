@@ -3,6 +3,7 @@ package com.veggofresh.admin.service;
 import com.veggofresh.admin.dto.AdminCustomerDto;
 import com.veggofresh.admin.dto.AdminDeliveryPartnerDto;
 import com.veggofresh.admin.dto.AdminVendorDto;
+import com.veggofresh.delivery.entity.DeliveryApplicationState;
 import com.veggofresh.delivery.entity.DeliveryKycStatus;
 import com.veggofresh.vendor.entity.KycStatus;
 import org.springframework.data.domain.Page;
@@ -67,17 +68,21 @@ public interface AdminUserListService {
      * Paginated + filtered delivery-partner list.
      *
      * @param search     optional text search (name / email / city / vehicle / plate)
-     * @param kycStatus  optional KYC status filter
+     * @param kycStatus  optional KYC status filter. {@code PENDING} means "waiting for review": riders who have
+     *                   only started onboarding (drafts) are NOT included; find them with {@code applicationState=DRAFT}
+     * @param applicationState optional: DRAFT, UNDER_REVIEW, APPROVED or REJECTED. Takes precedence over kycStatus
      * @param isOnline   optional online/offline filter
      * @param pageable   pagination + sorting
      */
-    Page<AdminDeliveryPartnerDto> getAllDeliveryPartners(String search, DeliveryKycStatus kycStatus, Boolean isOnline, Pageable pageable);
+    Page<AdminDeliveryPartnerDto> getAllDeliveryPartners(String search, DeliveryKycStatus kycStatus,
+            DeliveryApplicationState applicationState, Boolean isOnline, Pageable pageable);
 
     /**
      * Returns the matching delivery-partner rows as a flat list for PDF generation.
      * Internally limited to {@code limit} records.
      */
-    List<AdminDeliveryPartnerDto> getDeliveryPartnersForExport(String search, DeliveryKycStatus kycStatus, Boolean isOnline, int limit);
+    List<AdminDeliveryPartnerDto> getDeliveryPartnersForExport(String search, DeliveryKycStatus kycStatus,
+            DeliveryApplicationState applicationState, Boolean isOnline, int limit);
 
     /** Generates a PDF byte array from the given delivery-partner list. */
     byte[] generateDeliveryPartnersPdf(List<AdminDeliveryPartnerDto> partners);

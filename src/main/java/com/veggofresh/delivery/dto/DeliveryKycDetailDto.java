@@ -31,7 +31,20 @@ public class DeliveryKycDetailDto {
     private String licenseNumber;
     private String kycStatus;
     private String rejectionReason;
+    /** When the rider submitted the application; null for a draft that was never submitted. */
     private Instant submittedAt;
+
+    // ---- application state and history ----
+    /** DRAFT, UNDER_REVIEW, APPROVED or REJECTED. Only UNDER_REVIEW can be approved or rejected. */
+    private String applicationState;
+    private int submissionCount;
+    private int rejectionCount;
+    /** True when this rider was rejected before. */
+    private boolean resubmission;
+    /** The sections flagged by the current rejection (BASIC_INFO, LICENSE, VEHICLE, BANK). */
+    private List<String> rejectedSections;
+    /** Every submit / withdraw / approve / reject, oldest first. */
+    private List<DeliveryKycHistoryDto> history;
 
     // ---- new: the rest of the onboarding data ----
     private String email;

@@ -36,6 +36,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.List;
+import java.util.Objects;
 import java.util.Map;
 import java.util.UUID;
 import java.util.stream.Collectors;
@@ -134,10 +135,20 @@ public class PayoutServiceImpl implements PayoutService {
                     return a;
                 });
 
+        // The Razorpay fund account is created once from these details and cached on the row. If the details have
+        // changed, the cached fund account still points at the OLD bank account, so payouts would silently keep
+        // going there. Drop it so the next payout creates a fresh one for the new details.
+        boolean detailsChanged = !Objects.equals(account.getAccountNumber(), profile.getAccountNumber())
+                || !Objects.equals(account.getIfscCode(), profile.getIfscCode())
+                || !Objects.equals(account.getAccountHolderName(), profile.getAccountHolderName());
+
         account.setAccountHolderName(profile.getAccountHolderName());
         account.setAccountNumber(profile.getAccountNumber());
         account.setIfscCode(profile.getIfscCode());
         account.setBankName(profile.getBankName());
+        if (detailsChanged) {
+            account.setRazorpayFundAccountId(null);
+        }
         return userBankAccountRepository.save(account);
     }
 

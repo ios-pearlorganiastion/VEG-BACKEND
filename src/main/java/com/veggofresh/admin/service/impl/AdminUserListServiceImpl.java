@@ -25,6 +25,7 @@ import com.veggofresh.complaint.repository.ComplaintRepository;
 import com.veggofresh.customer.entity.CustomerProfile;
 import com.veggofresh.customer.repository.CustomerProfileRepository;
 import com.veggofresh.customer.repository.OrderRepository;
+import com.veggofresh.delivery.entity.DeliveryApplicationState;
 import com.veggofresh.delivery.entity.DeliveryAssignmentStatus;
 import com.veggofresh.delivery.entity.DeliveryKycStatus;
 import com.veggofresh.delivery.entity.DeliveryPartnerProfile;
@@ -301,9 +302,12 @@ public class AdminUserListServiceImpl implements AdminUserListService {
 
     @Override
     @Transactional(readOnly = true)
-    public Page<AdminDeliveryPartnerDto> getAllDeliveryPartners(String search, DeliveryKycStatus kycStatus, Boolean isOnline, Pageable pageable) {
+    public Page<AdminDeliveryPartnerDto> getAllDeliveryPartners(String search, DeliveryKycStatus kycStatus,
+            DeliveryApplicationState applicationState, Boolean isOnline, Pageable pageable) {
         String cleanSearch = clean(search);
-        Page<DeliveryPartnerProfile> page = deliveryPartnerProfileRepository.findWithFilters(cleanSearch, kycStatus, isOnline, pageable);
+        DeliveryFilter filter = resolveDeliveryFilter(kycStatus, applicationState);
+        Page<DeliveryPartnerProfile> page = deliveryPartnerProfileRepository.findWithFilters(cleanSearch,
+                filter.kycStatus(), filter.submitted(), isOnline, pageable);
         List<UUID> userIds = page.stream().map(DeliveryPartnerProfile::getUserId).collect(Collectors.toList());
         Map<UUID, User> userMap = batchLoadUsers(userIds);
         Map<UUID, Long> deliveryCountMap = batchCountDeliveriesByUser(userIds);
@@ -315,10 +319,13 @@ public class AdminUserListServiceImpl implements AdminUserListService {
 
     @Override
     @Transactional(readOnly = true)
-    public List<AdminDeliveryPartnerDto> getDeliveryPartnersForExport(String search, DeliveryKycStatus kycStatus, Boolean isOnline, int limit) {
+    public List<AdminDeliveryPartnerDto> getDeliveryPartnersForExport(String search, DeliveryKycStatus kycStatus,
+            DeliveryApplicationState applicationState, Boolean isOnline, int limit) {
         String cleanSearch = clean(search);
+        DeliveryFilter filter = resolveDeliveryFilter(kycStatus, applicationState);
         Pageable exportPage = PageRequest.of(0, Math.min(limit, PDF_MAX_ROWS));
-        List<DeliveryPartnerProfile> list = deliveryPartnerProfileRepository.findWithFiltersNoPage(cleanSearch, kycStatus, isOnline, exportPage);
+        List<DeliveryPartnerProfile> list = deliveryPartnerProfileRepository.findWithFiltersNoPage(cleanSearch,
+                filter.kycStatus(), filter.submitted(), isOnline, exportPage);
         List<UUID> userIds = list.stream().map(DeliveryPartnerProfile::getUserId).collect(Collectors.toList());
         Map<UUID, User> userMap = batchLoadUsers(userIds);
         Map<UUID, Long> deliveryCountMap = batchCountDeliveriesByUser(userIds);
@@ -536,6 +543,31 @@ public class AdminUserListServiceImpl implements AdminUserListService {
                 .build();
     }
 
+    /** The two database conditions a delivery-partner list filter turns into. */
+    private record DeliveryFilter(DeliveryKycStatus kycStatus, Boolean submitted) {
+    }
+
+    /**
+     * kycStatus is PENDING from the moment a rider's profile exists, so on its own it cannot tell a rider who has
+     * only started onboarding from one whose application is waiting for review. The application state can:
+     * DRAFT = pending and not submitted, UNDER_REVIEW = pending and submitted. A plain {@code kycStatus=PENDING}
+     * is therefore treated as "waiting for review" (drafts excluded), matching the admin's review queue.
+     */
+    private static DeliveryFilter resolveDeliveryFilter(DeliveryKycStatus kycStatus, DeliveryApplicationState state) {
+        if (state != null) {
+            return switch (state) {
+                case DRAFT -> new DeliveryFilter(DeliveryKycStatus.PENDING, false);
+                case UNDER_REVIEW -> new DeliveryFilter(DeliveryKycStatus.PENDING, true);
+                case APPROVED -> new DeliveryFilter(DeliveryKycStatus.APPROVED, null);
+                case REJECTED -> new DeliveryFilter(DeliveryKycStatus.REJECTED, null);
+            };
+        }
+        if (kycStatus == DeliveryKycStatus.PENDING) {
+            return new DeliveryFilter(DeliveryKycStatus.PENDING, true);
+        }
+        return new DeliveryFilter(kycStatus, null);
+    }
+
     private AdminDeliveryPartnerDto toDeliveryDto(DeliveryPartnerProfile dp, User user, long deliveries, long complaints) {
         String email = (dp.getEmail() != null) ? dp.getEmail() : (user != null ? user.getEmail() : null);
         boolean blocked = user != null && user.isBlocked();
@@ -553,6 +585,10 @@ public class AdminUserListServiceImpl implements AdminUserListService {
                 .plateNumber(dp.getPlateNumber())
                 .cityOfOperation(dp.getCityOfOperation())
                 .kycStatus(dp.getKycStatus())
+                .applicationState(DeliveryApplicationState.of(dp).name())
+                .submittedAt(dp.getApplicationSubmittedAt())
+                .submissionCount(dp.getSubmissionCount())
+                .rejectionCount(dp.getRejectionCount())
                 .isOnline(dp.isOnline())
                 .isBlocked(blocked)
                 .isVerified(verified)

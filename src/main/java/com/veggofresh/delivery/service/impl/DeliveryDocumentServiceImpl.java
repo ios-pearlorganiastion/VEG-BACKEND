@@ -6,6 +6,7 @@ import com.veggofresh.delivery.entity.DeliveryDocumentStatus;
 import com.veggofresh.delivery.entity.DeliveryDocumentType;
 import com.veggofresh.delivery.repository.DeliveryDocumentRepository;
 import com.veggofresh.delivery.repository.DeliveryPartnerProfileRepository;
+import com.veggofresh.delivery.service.DeliveryApplicationGuard;
 import com.veggofresh.delivery.service.DeliveryDocumentService;
 import com.veggofresh.platform.exception.BusinessException;
 import com.veggofresh.platform.storage.CloudinaryService;
@@ -75,7 +76,8 @@ public class DeliveryDocumentServiceImpl implements DeliveryDocumentService {
 
     @Override
     public DeliveryDocumentResponseDto uploadDocument(UUID userId, DeliveryDocumentType type, MultipartFile file, LocalDate expiryDate) {
-        requirePartnerExists(userId);
+        // Documents are verified details: only a draft or a rejected application may change them.
+        DeliveryApplicationGuard.requireEditable(requirePartnerExists(userId), "documents");
 
         if (file == null || file.isEmpty()) {
             throw new BusinessException("DELIVERY_DOCUMENT_FILE_REQUIRED", "A file is required", HttpStatus.BAD_REQUEST);
@@ -109,8 +111,8 @@ public class DeliveryDocumentServiceImpl implements DeliveryDocumentService {
         return response;
     }
 
-    private void requirePartnerExists(UUID userId) {
-        partnerRepository.findByUserId(userId)
+    private DeliveryPartnerProfile requirePartnerExists(UUID userId) {
+        return partnerRepository.findByUserId(userId)
                 .orElseThrow(() -> new BusinessException("DELIVERY_PROFILE_NOT_FOUND", "Delivery partner profile not found", HttpStatus.NOT_FOUND));
     }
 

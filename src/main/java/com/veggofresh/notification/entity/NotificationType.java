@@ -26,6 +26,10 @@ public enum NotificationType {
     DELIVERY_PICKUP_OTP_VERIFIED,
     DELIVERY_DROP_OTP_GENERATED,
     DELIVERY_DROP_OTP_VERIFIED,
+    DELIVERY_KYC_APPROVED,      // rider-side: the admin approved the onboarding application
+    DELIVERY_KYC_REJECTED,      // rider-side: the admin sent the application back (reason in the body)
+    DELIVERY_CHANGE_APPROVED,   // rider-side: a change to verified details (bank, license...) was approved
+    DELIVERY_CHANGE_REJECTED,   // rider-side: a change request was refused (reason in the body)
 
     // â”€â”€ Stock / money / feedback â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     LOW_STOCK_ALERT,

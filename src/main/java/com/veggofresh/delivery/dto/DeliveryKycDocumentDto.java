@@ -17,7 +17,7 @@ import java.time.LocalDate;
 @NoArgsConstructor
 @AllArgsConstructor
 public class DeliveryKycDocumentDto {
-    /** LICENSE, INSURANCE, BACKGROUND_CHECK or BANK_INFO. */
+    /** LICENSE, INSURANCE or BANK_INFO. */
     private String documentType;
     /** PENDING, VERIFIED, EXPIRING, REJECTED, or NOT_UPLOADED. */
     private String status;

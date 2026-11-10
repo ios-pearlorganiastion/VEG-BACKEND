@@ -14,7 +14,7 @@ import java.time.LocalDate;
 import java.util.UUID;
 
 /**
- * One row per document type per partner (LICENSE, INSURANCE, BACKGROUND_CHECK, BANK_INFO).
+ * One row per document type per partner (LICENSE, INSURANCE, BANK_INFO).
  * Replaces DeliveryPartnerProfile.kycStatus for DISPLAY purposes (the vault screen needs
  * per-document status). kycStatus stays on the profile as the single boolean gate for
  * going online -- see DeliveryProfileServiceImpl for how the two are kept in sync.

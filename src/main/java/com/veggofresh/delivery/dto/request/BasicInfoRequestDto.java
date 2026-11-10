@@ -4,7 +4,10 @@ import jakarta.validation.constraints.NotBlank;
 import lombok.Getter;
 import lombok.Setter;
 
-/** Figma's signup form (name/city/vehicle type), captured right after OTP verification. */
+/**
+ * Signup form (name and city), captured right after OTP verification. The vehicle type is no longer asked here:
+ * it is entered together with the rest of the vehicle details in verification step 2.
+ */
 @Getter
 @Setter
 public class BasicInfoRequestDto {
@@ -13,7 +16,4 @@ public class BasicInfoRequestDto {
 
     @NotBlank(message = "City of operation is required")
     private String cityOfOperation;
-
-    @NotBlank(message = "Vehicle type is required")
-    private String vehicleType;
 }

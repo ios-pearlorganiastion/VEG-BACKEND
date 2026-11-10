@@ -12,6 +12,7 @@ import com.veggofresh.delivery.entity.DeliveryOnlineSession;
 import com.veggofresh.delivery.entity.DeliveryPartnerProfile;
 import com.veggofresh.delivery.repository.DeliveryOnlineSessionRepository;
 import com.veggofresh.delivery.repository.DeliveryPartnerProfileRepository;
+import com.veggofresh.delivery.service.DeliveryApplicationGuard;
 import com.veggofresh.delivery.service.DeliveryProfileService;
 import com.veggofresh.platform.exception.BusinessException;
 import com.veggofresh.platform.storage.CloudinaryService;
@@ -54,6 +55,11 @@ public class DeliveryProfileServiceImpl implements DeliveryProfileService {
         DeliveryPartnerProfile profile = profileRepository.findByUserId(userId)
                 .orElseThrow(() -> new BusinessException("DELIVERY_PROFILE_NOT_FOUND", "Delivery partner profile not found", HttpStatus.NOT_FOUND));
 
+        // The vehicle type is a verified detail: once the application is under review or approved it cannot be
+        // changed here. Sending the value it already has is harmless and passes.
+        if (request.getVehicleType() != null && !request.getVehicleType().equals(profile.getVehicleType())) {
+            DeliveryApplicationGuard.requireEditable(profile, "vehicle type");
+        }
         profile.setVehicleType(request.getVehicleType());
         profileRepository.save(profile);
 
@@ -96,21 +102,6 @@ public class DeliveryProfileServiceImpl implements DeliveryProfileService {
     }
 
     @Override
-    public DeliveryProfileResponseDto submitKycDocuments(UUID userId) {
-        // Document upload/storage is out of scope for this pass — mocked as moving
-        // the status back to PENDING for (re-)review. Wire real file storage later.
-        DeliveryPartnerProfile profile = profileRepository.findByUserId(userId)
-                .orElseThrow(() -> new BusinessException("DELIVERY_PROFILE_NOT_FOUND", "Delivery partner profile not found", HttpStatus.NOT_FOUND));
-
-        profile.setKycStatus(DeliveryKycStatus.PENDING);
-        profileRepository.save(profile);
-
-        UserSummaryDto user = userLookupService.findById(userId).orElseThrow();
-        return mapToDto(profile, user.getPhone());
-    }
-
-
-    @Override
     public DeliveryProfileResponseDto approveKycForTesting(UUID userId) {
         DeliveryPartnerProfile profile = profileRepository.findByUserId(userId)
                 .orElseThrow(() -> new BusinessException("DELIVERY_PROFILE_NOT_FOUND", "Delivery partner profile not found", HttpStatus.NOT_FOUND));
@@ -139,9 +130,21 @@ public class DeliveryProfileServiceImpl implements DeliveryProfileService {
         DeliveryPartnerProfile profile = profileRepository.findByUserId(userId)
                 .orElseThrow(() -> new BusinessException("DELIVERY_PROFILE_NOT_FOUND", "Delivery partner profile not found", HttpStatus.NOT_FOUND));
 
-        if (request.getFullName() != null) profile.setFullName(request.getFullName());
+        // Name and vehicle type are verified details: they are locked while the application is under review and
+        // once it is approved. A form that re-sends the value they already have is harmless and passes.
+        if (request.getFullName() != null) {
+            if (!request.getFullName().equals(profile.getFullName())) {
+                DeliveryApplicationGuard.requireEditable(profile, "name");
+            }
+            profile.setFullName(request.getFullName());
+        }
         if (request.getEmail() != null) profile.setEmail(request.getEmail());
-        if (request.getVehicleType() != null) profile.setVehicleType(request.getVehicleType());
+        if (request.getVehicleType() != null) {
+            if (!request.getVehicleType().equals(profile.getVehicleType())) {
+                DeliveryApplicationGuard.requireEditable(profile, "vehicle type");
+            }
+            profile.setVehicleType(request.getVehicleType());
+        }
         if (request.getVehicleColor() != null) profile.setVehicleColor(request.getVehicleColor());
         if (request.getPushNotificationsEnabled() != null) profile.setPushNotificationsEnabled(request.getPushNotificationsEnabled());
         if (request.getSmsAlertsEnabled() != null) profile.setSmsAlertsEnabled(request.getSmsAlertsEnabled());
